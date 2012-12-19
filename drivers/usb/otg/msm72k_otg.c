@@ -549,8 +549,13 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 
 	if (dev->otgclk)
 		clk_enable(dev->otgclk);
-	writel(0, USB_USBINTR);
-	writel(0, USB_OTGSC);
+	//writel(0, USB_USBINTR);
+	//writel(0, USB_OTGSC);
+        /* ACk all pending interrupts and clear interrupt enable registers */
+        writel((readl(USB_OTGSC) & ~OTGSC_INTR_MASK), USB_OTGSC);
+        writel(readl(USB_USBSTS), USB_USBSTS);
+        writel(0, USB_USBINTR);
+
 	if (dev->otgclk)
 		clk_disable(dev->otgclk);
 	/* To reduce phy power consumption and to avoid external LDO
@@ -594,6 +599,7 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 	}
 
 	device_init_wakeup(&pdev->dev, 1);
+
 
 	if (vbus_on_irq) {
 		ret = request_irq(vbus_on_irq, pmic_vbus_on_irq,
