@@ -408,7 +408,7 @@ static int process_control_msg(union rr_control_msg *msg, int len)
 			ctl.srv.prog = server->prog;
 			ctl.srv.vers = server->vers;
 
-			RR("x NEW_SERVER id=%d:%08x prog=%08x:%08x\n",
+			pr_info("x NEW_SERVER id=%d:%08x prog=%08x:%08x\n",
 			   server->pid, server->cid,
 			   server->prog, server->vers);
 
@@ -1196,7 +1196,7 @@ int msm_rpc_register_server(struct msm_rpc_endpoint *ept,
 	msg.srv.prog = prog;
 	msg.srv.vers = vers;
 
-	RR("x NEW_SERVER id=%d:%08x prog=%08x:%08x\n",
+	pr_info("xxx NEW_SERVER id=%d:%08x prog=%08x:%08x\n",
 	   ept->pid, ept->cid, prog, vers);
 
 	rc = rpcrouter_send_control_msg(&msg);

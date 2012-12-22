@@ -35,12 +35,16 @@
 #include <linux/akm8973.h>
 #include <../../../drivers/staging/android/timed_gpio.h>
 #include <linux/ds2746_battery.h>
+#include <linux/power_supply.h>
+#include <linux/clk.h>
+#include <mach/clk.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/setup.h>
 
+#include <mach/vreg.h>
 #include <mach/board.h>
 #include <mach/board_htc.h>
 #include <mach/hardware.h>
@@ -48,6 +52,11 @@
 #include <mach/msm_iomap.h>
 #include <mach/perflock.h>
 #include <mach/htc_usb.h>
+#include <mach/rpc_hsusb.h>
+#include <mach/rpc_pmapp.h>
+#include <mach/msm_hsusb.h>
+#include <mach/msm_hsusb_hw.h>
+
 #include <mach/msm_flashlight.h>
 #include <mach/msm_serial_hs.h>
 #include <mach/msm_serial_debugger.h>
@@ -304,55 +313,68 @@ static uint32_t usb_phy_3v3_table[] =
 
 static int htcleo_phy_init_seq[] ={0x0C, 0x31, 0x30, 0x32, 0x1D, 0x0D, 0x1D, 0x10, -1};
 
-struct msm_hsusb_platform_data msm_hsusb_host_pdata = {
-        .phy_init_seq           = htcleo_phy_init_seq,
-        .phy_reset              = msm_hsusb_8x50_phy_reset,
-        .accessory_detect = 0, /* detect by ID pin gpio */
 
-#ifdef CONFIG_USB_FUNCTION
-        .vendor_id = 0x0bb4,
-        .product_id = 0x0c02,
-        .version = 0x0100,
-        .product_name = "Ultrasystem USB Controller",
-        .manufacturer_name = "HTC",
+static struct vreg *vreg_usb;
+static void msm_hsusb_vbus_power(unsigned phy_info, int on)
+{
 
-        .functions = usb_functions,
-        .num_functions = ARRAY_SIZE(usb_functions),
-        .products = usb_products,
-        .num_products = ARRAY_SIZE(usb_products),
-#endif
+        switch (PHY_TYPE(phy_info)) {
+        case USB_PHY_INTEGRATED:
+                if (on)
+                        msm_hsusb_vbus_powerup();
+                else
+                        msm_hsusb_vbus_shutdown();
+                break;
+        case USB_PHY_SERIAL_PMIC:
+                if (on)
+                        vreg_enable(vreg_usb);
+                else
+                        vreg_disable(vreg_usb);
+                break;
+        default:
+                pr_err("%s: undefined phy type ( %X ) \n", __func__,
+                                                phy_info);
+        }
+
+}
+
+static struct msm_usb_host_platform_data msm_usb_host_pdata = {
+        .phy_info       = (USB_PHY_INTEGRATED | USB_PHY_MODEL_180NM),
+        .phy_reset = msm_hsusb_8x50_phy_reset,
+        .vbus_power = msm_hsusb_vbus_power,
 };
+
+#ifdef CONFIG_USB_FS_HOST
+static struct msm_usb_host_platform_data msm_usb_host2_pdata = {
+        .phy_info       = USB_PHY_SERIAL_PMIC,
+        .config_gpio = msm_fsusb_setup_gpio,
+        .vbus_power = msm_hsusb_vbus_power,
+};
+#endif
+
 
 struct msm_hsusb_platform_data msm_hsusb_udc_pdata = {
         .phy_init_seq           = htcleo_phy_init_seq,
         .phy_reset              = msm_hsusb_8x50_phy_reset,
         .accessory_detect = 0, /* detect by ID pin gpio */
-
-#ifdef CONFIG_USB_FUNCTION
-        .vendor_id = 0x0bb4,
-        .product_id = 0x0c02,
-        .version = 0x0100,
-        .product_name = "Ultrasystem USB Controller",
-        .manufacturer_name = "HTC",
-
-        .functions = usb_functions,
-        .num_functions = ARRAY_SIZE(usb_functions),
-        .products = usb_products,
-        .num_products = ARRAY_SIZE(usb_products),
-#endif
 };
 
+static int hsusb_rpc_connect(int connect)
+{
+        if (connect)
+                return msm_hsusb_rpc_connect();
+        else
+                return msm_hsusb_rpc_close();
+}
+
 static struct msm_otg_platform_data msm_otg_pdata = {
-	.phy_init_seq           = htcleo_phy_init_seq,
-	.phy_reset		= msm_hsusb_8x50_phy_reset,
-
-	.pmic_vbus_irq		 = 0,
-
-	.pmic_notif_init         = NULL,
-	.pmic_notif_deinit       = NULL,
-	.pmic_register_vbus_sn   = NULL,
-	.pmic_unregister_vbus_sn = NULL,
-	.pmic_enable_ldo         = NULL,
+        .rpc_connect    = hsusb_rpc_connect,
+        .phy_reset      = msm_hsusb_8x50_phy_reset,
+        .pmic_notif_init         = msm_pm_app_rpc_init,
+        .pmic_notif_deinit       = msm_pm_app_rpc_deinit,
+        .pmic_register_vbus_sn   = msm_pm_app_register_vbus_sn,
+        .pmic_unregister_vbus_sn = msm_pm_app_unregister_vbus_sn,
+        .pmic_enable_ldo         = msm_pm_app_enable_usb_ldo,
 };
 
 #ifdef CONFIG_USB_ANDROID
@@ -439,13 +461,15 @@ static struct msm_pm_platform_data msm_pm_data[MSM_PM_SLEEP_MODE_NR] = {
 	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].residency = 0,
 };
 
-static void htcleo_add_usb_devices(void)
+static void htcleo_init_usb_devices(void)
 {
 	android_usb_pdata.products[0].product_id =
 		android_usb_pdata.product_id;
 	android_usb_pdata.serial_number = board_serialno();
+
 	msm_hsusb_pdata.serial_number = board_serialno();
-	msm_device_hsusb.dev.platform_data = &msm_hsusb_pdata;
+	msm_device_hsusb.dev.platform_data = &msm_hsusb_udc_pdata;
+
 	config_gpio_table(usb_phy_3v3_table, ARRAY_SIZE(usb_phy_3v3_table));
 	gpio_set_value(HTCLEO_GPIO_USBPHY_3V3_ENABLE, 1);
 
@@ -455,21 +479,35 @@ static void htcleo_add_usb_devices(void)
 #endif
 
 	/* support for ehci host */
-        msm_hsusb_host_pdata.serial_number = board_serialno();
-        msm_device_hsusb_host.dev.platform_data = &msm_hsusb_host_pdata;
-        platform_device_register(&msm_device_hsusb_host);
+        vreg_usb = vreg_get(NULL, "boost");
 
+        if (IS_ERR(vreg_usb)) {
+                printk(KERN_ERR "%s: vreg get failed (%ld)\n",
+                       __func__, PTR_ERR(vreg_usb));
+                return;
+        }
+
+
+#ifdef CONFIG_USB_EHCI_MSM
+        msm_device_hsusb_host.dev.platform_data = &msm_usb_host_pdata;
+        platform_device_register(&msm_device_hsusb_host);
+#endif
+
+#if 0
 	/* for test */
         msm_hsusb_udc_pdata.serial_number = board_serialno();
         msm_device_hsusb_udc.dev.platform_data = &msm_hsusb_udc_pdata;
 	platform_device_register(&msm_device_hsusb_udc);
-
+#endif
 	platform_device_register(&msm_device_hsusb);
+	
 	platform_device_register(&usb_mass_storage_device);
 #ifdef CONFIG_USB_ANDROID_RNDIS
 	platform_device_register(&rndis_device);
 #endif
 	platform_device_register(&android_usb_device);
+
+
 }
 
 unsigned htcleo_get_vbus_state(void)
@@ -1168,20 +1206,18 @@ static void __init htcleo_init(void)
 	mdelay(100);
 	htcleo_kgsl_power(true);
 
-	platform_add_devices(devices, ARRAY_SIZE(devices));
+        htcleo_init_panel();
 
-	htcleo_init_panel();
+        htcleo_init_mmc(0);
+        platform_device_register(&htcleo_timed_gpios);
 
-
-	i2c_register_board_info(0, base_i2c_devices, ARRAY_SIZE(base_i2c_devices));
+        i2c_register_board_info(0, base_i2c_devices, ARRAY_SIZE(base_i2c_devices));
 
 #ifdef CONFIG_USB_ANDROID
-	htcleo_add_usb_devices();
+        htcleo_init_usb_devices();
 #endif
 
-	htcleo_init_mmc(0);
-	platform_device_register(&htcleo_timed_gpios);
-
+	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	/* Blink the camera LED shortly to show that we're alive! */
 #ifdef CONFIG_HTCLEO_BLINK_AT_BOOT

@@ -19,7 +19,30 @@
 
 #include <linux/types.h>
 
-#define USB_MAGIC_CODE		'LiIo'
+#define PHY_TYPE_MASK           0x0F
+#define PHY_TYPE_MODE           0xF0
+#define PHY_MODEL_MASK          0xFF00
+#define PHY_TYPE(x)             ((x) & PHY_TYPE_MASK)
+#define PHY_MODEL(x)            ((x) & PHY_MODEL_MASK)
+
+#define USB_PHY_MODEL_65NM      0x100
+#define USB_PHY_MODEL_180NM     0x200
+#define USB_PHY_MODEL_45NM      0x400
+#define USB_PHY_UNDEFINED       0x00
+#define USB_PHY_INTEGRATED      0x01
+#define USB_PHY_EXTERNAL        0x02
+#define USB_PHY_SERIAL_PMIC     0x04
+
+#define REQUEST_STOP            0
+#define REQUEST_START           1
+#define REQUEST_RESUME          2
+
+enum hsusb_phy_type {
+        UNDEFINED,
+        INTEGRATED,
+        EXTERNAL,
+};
+
 
 /* platform device data for msm_hsusb driver */
 
@@ -51,20 +74,18 @@ enum chg_type {
 
 
 struct msm_otg_platform_data {
-	int (*phy_reset)(void __iomem *);
-	/* val, reg pairs terminated by -1 */
-        int *phy_init_seq;
+        int (*rpc_connect)(int);
+        int (*phy_reset)(void __iomem *);
+        unsigned int core_clk;
+        int pmic_vbus_irq;
+        int pclk_required_during_lpm;
 
-	unsigned int core_clk;
-	int pmic_vbus_irq;
-	int pclk_required_during_lpm;
-
-	/* pmic notfications apis */
-	int (*pmic_notif_init) (void);
-	void (*pmic_notif_deinit) (void);
-	int (*pmic_register_vbus_sn) (void (*callback)(int online));
-	void (*pmic_unregister_vbus_sn) (void (*callback)(int online));
-	int (*pmic_enable_ldo) (int);
+        /* pmic notfications apis */
+        int (*pmic_notif_init) (void);
+        void (*pmic_notif_deinit) (void);
+        int (*pmic_register_vbus_sn) (void (*callback)(int online));
+        void (*pmic_unregister_vbus_sn) (void (*callback)(int online));
+        int (*pmic_enable_ldo) (int);
 };
 
 struct msm_hsusb_gadget_platform_data {
@@ -138,4 +159,12 @@ struct msm_hsusb_platform_data {
 };
 
 int usb_get_connect_type(void);
+
+struct msm_usb_host_platform_data {
+        unsigned phy_info;
+        int (*phy_reset)(void __iomem *addr);
+        void (*config_gpio)(unsigned int config);
+        void (*vbus_power) (unsigned phy_info, int on);
+};
+
 #endif

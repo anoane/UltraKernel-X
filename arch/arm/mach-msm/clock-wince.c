@@ -27,9 +27,6 @@
 #include <asm/io.h>
 
 #include "clock.h"
-#if defined(CONFIG_MSM_AMSS_VERSION_WINCE)
-//#include "dex_comm.h"
-#endif
 #include "proc_comm.h"
 
 //#define ENABLE_CLOCK_INFO   1
@@ -234,10 +231,6 @@ struct mdns_clock_params msm_clock_freq_parameters[] = {
 	MSM_CLOCK_REG(58982400,   6, 0x19, 0x0c, 0, 2, 4, 1, 245760000), /* BT, 3686400 (*16) */
 	MSM_CLOCK_REG(64000000,0x19, 0x60, 0x30, 0, 2, 4, 1, 245760000), /* BT, 4000000 (*16) */
 };
-
-int status_set_grp_clk = 0;
-int i_set_grp_clk = 0;
-int control_set_grp_clk;
 
 static void set_grp_clk( int on )
 {
@@ -932,8 +925,8 @@ static int pc_clk_enable(uint32_t id)
 static void pc_clk_disable(uint32_t id)
 {
 	struct msm_clock_params params;
-	params = msm_clk_get_params(id);
 	int r;
+	params = msm_clk_get_params(id);
 
     r = new_clk_disable(id);
     if (r != -1) return;
@@ -962,9 +955,9 @@ static void pc_clk_disable(uint32_t id)
 
 static int pc_clk_set_rate(uint32_t id, unsigned long rate)
 {
-	int retval;
+	int retval, r;
+
 	retval = 0;
-	int r;
 
     r = new_clk_set_rate(id, rate);
 	if (r != -1) return r;
@@ -1067,6 +1060,13 @@ static int pc_clk_is_enabled(uint32_t id)
 	return is_enabled;
 }
 
+long pc_clk_round_rate(unsigned id, unsigned rate)
+{
+
+	/* Not really supported; pc_clk_set_rate() does rounding on it's own. */
+	return rate;
+}
+
 static int pc_pll_request(unsigned id, unsigned on)
 {
 	if(debug_mask&DEBUG_UNKNOWN_CMD)
@@ -1132,6 +1132,29 @@ void clk_disable(struct clk *clk)
 }
 EXPORT_SYMBOL(clk_disable);
 
+int pc_clk_reset(unsigned id, enum clk_reset_action action)
+{
+         int rc;
+ 
+        if (action == CLK_RESET_ASSERT)
+                 rc = msm_proc_comm(PCOM_CLKCTL_RPC_RESET_ASSERT, &id, NULL);
+        else
+                 rc = msm_proc_comm(PCOM_CLKCTL_RPC_RESET_DEASSERT, &id, NULL);
+ 
+         if (rc < 0)
+                 return rc;
+         else
+                return (int)id < 0 ? -EINVAL : 0;
+}
+
+int clk_reset(struct clk *clk, enum clk_reset_action action)
+{
+	if (!clk->ops->reset)
+		clk->ops->reset = &pc_clk_reset;
+	return clk->ops->reset(clk->remote_id, action);
+}
+EXPORT_SYMBOL(clk_reset);
+
 unsigned long clk_get_rate(struct clk *clk)
 {
 	return pc_clk_get_rate(clk->id);
@@ -1159,6 +1182,12 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 	return pc_clk_set_rate(clk->id, rate);
 }
 EXPORT_SYMBOL(clk_set_rate);
+
+long clk_round_rate(struct clk *clk, unsigned long rate)
+{
+	return clk->ops->round_rate(clk->id, rate);
+}
+EXPORT_SYMBOL(clk_round_rate);
 
 int clk_set_parent(struct clk *clk, struct clk *parent)
 {
@@ -1313,5 +1342,5 @@ struct clk_ops clk_ops_pcom = {
 	.set_flags = pc_clk_set_flags,
 	.get_rate = pc_clk_get_rate,
 	.is_enabled = pc_clk_is_enabled,
-//	.round_rate = pc_clk_round_rate,
+	.round_rate = pc_clk_round_rate,
 };

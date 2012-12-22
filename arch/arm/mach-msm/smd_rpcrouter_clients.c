@@ -288,12 +288,17 @@ struct msm_rpc_client *msm_rpc_register_client(
 	int rc;
 
 	client = msm_rpc_create_client();
-	if (IS_ERR(client))
+	if (IS_ERR(client)) {
+
+		pr_err("%s: register client failed.\n",__func__);
 		return client;
+	}
 
 	// fixed and add flag: MSM_RPC_ENABLE_RECEIVE, RPC for pmapp warng
-	ept = msm_rpc_connect_compatible(prog, ver, MSM_RPC_UNINTERRUPTIBLE|MSM_RPC_ENABLE_RECEIVE);
+	ept = msm_rpc_connect(prog, ver, MSM_RPC_UNINTERRUPTIBLE|MSM_RPC_ENABLE_RECEIVE);
 	if (IS_ERR(ept)) {
+
+		pr_err("%s: register %x:%x failed.\n", __func__, prog,ver);
 		msm_rpc_destroy_client(client);
 		return (struct msm_rpc_client *)ept;
 	}
@@ -303,6 +308,8 @@ struct msm_rpc_client *msm_rpc_register_client(
 	client->ept = client->xdr.ept = client->cb_xdr.ept = ept;
 	client->cb_func = cb_func;
 	client->version = 1;
+
+	pr_info("%s: register %s success.\n",__func__, name);
 
 	/* start the read thread */
 	client->read_thread = kthread_run(rpc_clients_thread, client,
@@ -314,7 +321,10 @@ struct msm_rpc_client *msm_rpc_register_client(
 		return ERR_PTR(rc);
 	}
 
+	pr_info("%s: thread k%sclntd is running.\n",__func__, name);
+
 	if (!create_cb_thread || (cb_func == NULL)) {
+		pr_info("%s: %s not any callback routine.\n",__func__, name);
 		client->cb_thread = NULL;
 		return client;
 	}
@@ -323,6 +333,9 @@ struct msm_rpc_client *msm_rpc_register_client(
 	client->cb_thread = kthread_run(rpc_clients_cb_thread, client,
 					"k%sclntcbd", name);
 	if (IS_ERR(client->cb_thread)) {
+
+		pr_info("%s: thread k%sclntcbd is failed.\n",__func__, name);
+
 		rc = PTR_ERR(client->cb_thread);
 		client->exit_flag = 1;
 		wait_for_completion(&client->complete);
@@ -330,6 +343,8 @@ struct msm_rpc_client *msm_rpc_register_client(
 		msm_rpc_destroy_client(client);
 		return ERR_PTR(rc);
 	}
+
+	pr_info("%s: thread k%sclntcbd is running.\n",__func__, name);
 
 	return client;
 }
@@ -371,7 +386,7 @@ struct msm_rpc_client *msm_rpc_register_client2(
 	if (IS_ERR(client))
 		return client;
 
-	ept = msm_rpc_connect_compatible(prog, ver, MSM_RPC_UNINTERRUPTIBLE);
+	ept = msm_rpc_connect(prog, ver, MSM_RPC_UNINTERRUPTIBLE);
 	if (IS_ERR(ept)) {
 		msm_rpc_destroy_client(client);
 		return (struct msm_rpc_client *)ept;

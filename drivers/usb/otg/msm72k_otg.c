@@ -12,6 +12,7 @@
 #include <mach/msm_hsusb_hw.h>
 #include <mach/msm72k_otg.h>
 #include <mach/msm_hsusb.h>
+#include <mach/rpc_pmapp.h>
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
 
@@ -162,7 +163,6 @@ static int msm_otg_suspend(struct msm_otg *dev)
 	if (!is_host())
 		otg_reset(dev);
 
-
 	ulpi_read(dev, 0x14);/* clear PHY interrupt latch register */
 	/* If there is no pmic notify support turn on phy comparators. */
 	if (!dev->pmic_notif_supp || chg_type == USB_CHG_TYPE__WALLCHARGER)
@@ -171,6 +171,7 @@ static int msm_otg_suspend(struct msm_otg *dev)
 
 	timeout = jiffies + msecs_to_jiffies(500);
 	disable_phy_clk();
+	mdelay(1);
 	while (!is_phy_clk_disabled()) {
 		if (time_after(jiffies, timeout)) {
 			pr_err("%s: Unable to suspend phy\n", __func__);
@@ -185,9 +186,15 @@ static int msm_otg_suspend(struct msm_otg *dev)
 	}
 
 	writel(readl(USB_USBCMD) | ASYNC_INTR_CTRL | ULPI_STP_CTRL, USB_USBCMD);
-	clk_disable(dev->pclk);
-	if (dev->cclk)
-		clk_disable(dev->cclk);
+
+        if (dev->otgclk)
+                clk_disable(dev->otgclk);
+        clk_disable(dev->pclk);
+        clk_disable(dev->clk);
+        if (dev->cclk)
+                clk_disable(dev->cclk);
+        clk_set_rate(dev->ebi1clk, 0);
+
 	if (device_may_wakeup(dev->otg.dev)) {
 		enable_irq_wake(dev->irq);
 		if (dev->vbus_on_irq)
@@ -199,7 +206,7 @@ static int msm_otg_suspend(struct msm_otg *dev)
 	if (!vbus && dev->pmic_notif_supp)
 		dev->pmic_enable_ldo(0);
 
-	pr_info("%s: usb in low power mode\n", __func__);
+	USB_INFO("%s: usb in low power mode\n", __func__);
 
 out:
 	enable_irq(dev->irq);
@@ -218,10 +225,13 @@ static int msm_otg_resume(struct msm_otg *dev)
 	if (!dev->in_lpm)
 		return 0;
 
+        if (dev->cclk)
+                clk_enable(dev->cclk);
+        clk_enable(dev->clk);
+        clk_enable(dev->pclk);
+        if (dev->otgclk)
+                clk_enable(dev->otgclk);
 
-	clk_enable(dev->pclk);
-	if (dev->cclk)
-		clk_enable(dev->cclk);
 
 	temp = readl(USB_USBCMD);
 	temp &= ~ASYNC_INTR_CTRL;
@@ -241,7 +251,7 @@ static int msm_otg_resume(struct msm_otg *dev)
 	}
 
 	dev->in_lpm = 0;
-	pr_info("%s: usb exited from low power mode\n", __func__);
+	USB_INFO("%s: usb exited from low power mode\n", __func__);
 
 	return 0;
 }
@@ -308,7 +318,7 @@ static int msm_otg_set_peripheral(struct otg_transceiver *xceiv,
 	enable_sess_valid(dev);
 	if (dev->pmic_notif_supp && dev->pmic_register_vbus_sn)
 		dev->pmic_register_vbus_sn(&msm_otg_set_vbus_state);
-	pr_info("peripheral driver registered w/ tranceiver\n");
+	USB_INFO("peripheral driver registered w/ tranceiver\n");
 
 	if (is_host())
 		msm_otg_start_host(&dev->otg, 1);
@@ -339,7 +349,7 @@ static int msm_otg_set_host(struct otg_transceiver *xceiv, struct usb_bus *host)
 	}
 	dev->otg.host = host;
 	enable_idgnd(dev);
-	pr_info("host driver registered w/ tranceiver\n");
+	USB_INFO("host driver registered w/ tranceiver\n");
 
 #ifndef CONFIG_USB_GADGET_MSM_72K
 	if (is_host())
@@ -354,6 +364,7 @@ static void msm_otg_set_vbus_state(int online)
 {
 	struct msm_otg *dev = the_msm_otg;
 
+	pr_info("%s: vbus state: %d.\n", __func__,online);
 	if (online)
 		msm_otg_set_suspend(&dev->otg, 0);
 }
@@ -368,7 +379,7 @@ static irqreturn_t pmic_vbus_on_irq(int irq, void *data)
 	if (!dev->otg.gadget)
 		return IRQ_HANDLED;
 
-	pr_info("%s: vbus notification from pmic\n", __func__);
+	USB_INFO("%s: vbus notification from pmic\n", __func__);
 
 	msm_otg_set_suspend(&dev->otg, 0);
 
@@ -463,12 +474,15 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 	if (!dev)
 		return -ENOMEM;
 
+	USB_INFO("-== MSM7201 OTG DRIVER START INIT ==-\n");
+
 	dev->otg.dev = &pdev->dev;
 	pdata = pdev->dev.platform_data;
 
 	if (pdev->dev.platform_data) {
 		dev->phy_reset = pdata->phy_reset;
 		dev->core_clk  = pdata->core_clk;
+		dev->rpc_connect = pdata->rpc_connect;
 		/* pmic apis */
 		dev->pmic_notif_init = pdata->pmic_notif_init;
 		dev->pmic_notif_deinit = pdata->pmic_notif_deinit;
@@ -486,6 +500,11 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 			goto free_dev;
 		}
 	}
+
+        if (dev->rpc_connect) {
+                ret = dev->rpc_connect(1);
+                pr_info("%s: rpc_connect(%d)\n", __func__, ret);
+        }
 
 	dev->clk = clk_get(NULL, "usb_hs_clk");
 	if (IS_ERR(dev->clk)) {
@@ -505,14 +524,14 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 		dev->otgclk = NULL;
 	}
 
-	if (dev->core_clk) {
-		dev->cclk = clk_get(NULL, "usb_hs_core_clk");
-		if (IS_ERR(dev->cclk)) {
-			pr_err("%s: failed to get usb_hs_core_clk\n", __func__);
-			ret = PTR_ERR(dev->cclk);
-			goto put_pclk;
-		}
-	}
+        if (dev->core_clk) {
+                dev->cclk = clk_get(&pdev->dev, "usb_hs_core_clk");
+                if (IS_ERR(dev->cclk)) {
+                        pr_err("%s: failed to get usb_hs_core_clk\n", __func__);
+                        ret = PTR_ERR(dev->cclk);
+                        goto put_pclk;
+                }
+        }
 
 	dev->ebi1clk = clk_get(NULL, "ebi1_clk");
 	if (IS_ERR(dev->ebi1clk)) {
@@ -547,27 +566,22 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 	if (dev->cclk)
 		clk_enable(dev->cclk);
 
-	if (dev->otgclk)
-		clk_enable(dev->otgclk);
-	//writel(0, USB_USBINTR);
-	//writel(0, USB_OTGSC);
-        /* ACk all pending interrupts and clear interrupt enable registers */
-        writel((readl(USB_OTGSC) & ~OTGSC_INTR_MASK), USB_OTGSC);
-        writel(readl(USB_USBSTS), USB_USBSTS);
-        writel(0, USB_USBINTR);
-
-	if (dev->otgclk)
-		clk_disable(dev->otgclk);
 	/* To reduce phy power consumption and to avoid external LDO
 	 * on the board, PMIC comparators can be used to detect VBUS
 	 * session change.
 	 */
 	if (dev->pmic_notif_init) {
 		ret = dev->pmic_notif_init();
+
+		USB_INFO("%s: request pmapp init notify init = %d.f1=%p, f2=%p\n", __func__, ret, msm_pm_app_rpc_init,dev->pmic_notif_init);
 		if (!ret) {
 			dev->pmic_notif_supp = 1;
 			dev->pmic_enable_ldo(1);
+
 		} else if (ret != -ENOTSUPP) {
+
+			pr_info("%s: request pmic notify failed\n", __func__);
+
 			clk_disable(dev->pclk);
 			if (dev->cclk)
 				clk_disable(dev->cclk);
@@ -611,6 +625,7 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 		}
 	}
 
+	USB_INFO("-== MSM7201 OTG DRIVER END PROBE ==-\n");
 	return 0;
 free_otg_irq:
 	free_irq(dev->irq, dev);

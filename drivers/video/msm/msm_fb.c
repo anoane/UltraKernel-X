@@ -335,8 +335,6 @@ static void msmfb_pan_update(struct fb_info *info, uint32_t left, uint32_t top,
 	/* Jay, 8/1/09' */
 	msmfb_set_var(msmfb->fb->screen_base, yoffset);
 #endif
-        if (msmfb->sleeping != AWAKE)
-                DLOG(SUSPEND_RESUME, "pan_update in state(%d)\n", msmfb->sleeping);
 
 restart:
 	spin_lock_irqsave(&msmfb->update_lock, irq_flags);

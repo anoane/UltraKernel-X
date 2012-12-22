@@ -47,6 +47,8 @@ static struct wake_lock rpc_servers_wake_lock;
 static void rpc_server_register(struct msm_rpc_server *server)
 {
 	int rc;
+
+	pr_info("server reg: proc:%x, vers:%x\n",server->prog,server->vers);
 	rc = msm_rpc_register_server(endpoint, server->prog, server->vers);
 	if (rc < 0)
 		printk(KERN_ERR "[rpcserver] error registering %p @ %08x:%d\n",
@@ -99,6 +101,7 @@ int msm_rpc_create_server(struct msm_rpc_server *server)
 		rpc_server_register(server);
 		server->flags |= FLAG_REGISTERED;
 	}
+	pr_info("server reg: proc:%x, vers:%x\n",server->prog,server->vers);
 	mutex_unlock(&rpc_server_list_lock);
 
 	return 0;

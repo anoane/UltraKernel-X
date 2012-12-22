@@ -38,7 +38,7 @@
 #include <asm/unaligned.h>
 #include <linux/platform_device.h>
 #include <linux/workqueue.h>
-#include <mach/msm_hsusb.h>
+
 #include <linux/usb.h>
 
 #include "usb.h"
@@ -1890,7 +1890,6 @@ EXPORT_SYMBOL_GPL(usb_bus_start_enum);
 irqreturn_t usb_hcd_irq (int irq, void *__hcd)
 {
 	struct usb_hcd		*hcd = __hcd;
-	unsigned long		magic_code = *(unsigned long *)__hcd;
 	unsigned long		flags;
 	irqreturn_t		rc;
 
@@ -1899,23 +1898,18 @@ irqreturn_t usb_hcd_irq (int irq, void *__hcd)
 	 * assume it's never used.
 	 */
 	local_irq_save(flags);
-	
-	if(magic_code != USB_MAGIC_CODE) {
 
-		if (unlikely(hcd->state == HC_STATE_HALT ||
-			     !test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags))) {
-			rc = IRQ_NONE;
-		} else if (hcd->driver->irq(hcd) == IRQ_NONE) {
-			rc = IRQ_NONE;
-		} else {
-			set_bit(HCD_FLAG_SAW_IRQ, &hcd->flags);
-
-			if (unlikely(hcd->state == HC_STATE_HALT))
-				usb_hc_died(hcd);
-			rc = IRQ_HANDLED;
-		}
-	} else {
+	if (unlikely(hcd->state == HC_STATE_HALT ||
+		     !test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags))) {
 		rc = IRQ_NONE;
+	} else if (hcd->driver->irq(hcd) == IRQ_NONE) {
+		rc = IRQ_NONE;
+	} else {
+		set_bit(HCD_FLAG_SAW_IRQ, &hcd->flags);
+
+		if (unlikely(hcd->state == HC_STATE_HALT))
+			usb_hc_died(hcd);
+		rc = IRQ_HANDLED;
 	}
 
 	local_irq_restore(flags);
