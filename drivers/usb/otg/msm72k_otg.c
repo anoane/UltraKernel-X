@@ -99,6 +99,8 @@ static int msm_otg_set_clk(struct otg_transceiver *xceiv, int on)
 {
 	struct msm_otg *dev = container_of(xceiv, struct msm_otg, otg);
 
+	pr_info("%s: set clk: %d\n", __func__,on);
+
 	if (!dev || (dev != the_msm_otg))
 		return -ENODEV;
 
@@ -129,6 +131,7 @@ static void msm_otg_start_peripheral(struct otg_transceiver *xceiv, int on)
 		atomic_set(&dev->chg_type, USB_CHG_TYPE__INVALID);
 
 		usb_gadget_vbus_disconnect(xceiv->gadget);
+
 		/* decrement the clk reference count so that
 		 * it would be off when disabled from
 		 * low power mode routine
@@ -174,7 +177,7 @@ static int msm_otg_suspend(struct msm_otg *dev)
 	mdelay(1);
 	while (!is_phy_clk_disabled()) {
 		if (time_after(jiffies, timeout)) {
-			pr_err("%s: Unable to suspend phy\n", __func__);
+			pr_err("%s: Unable to suspend phy: %x:%x\n", __func__, readl(USB_PORTSC),PORTSC_PHCD );
 			otg_reset(dev);
 			goto out;
 		}
@@ -187,15 +190,13 @@ static int msm_otg_suspend(struct msm_otg *dev)
 
 	writel(readl(USB_USBCMD) | ASYNC_INTR_CTRL | ULPI_STP_CTRL, USB_USBCMD);
 
-        if (dev->otgclk)
-                clk_disable(dev->otgclk);
         clk_disable(dev->pclk);
-        clk_disable(dev->clk);
         if (dev->cclk)
                 clk_disable(dev->cclk);
-        clk_set_rate(dev->ebi1clk, 0);
 
 	if (device_may_wakeup(dev->otg.dev)) {
+
+		USB_INFO("suspend: device_may_wakeup.\n");
 		enable_irq_wake(dev->irq);
 		if (dev->vbus_on_irq)
 			enable_irq_wake(dev->vbus_on_irq);
@@ -225,13 +226,9 @@ static int msm_otg_resume(struct msm_otg *dev)
 	if (!dev->in_lpm)
 		return 0;
 
+        clk_enable(dev->pclk);
         if (dev->cclk)
                 clk_enable(dev->cclk);
-        clk_enable(dev->clk);
-        clk_enable(dev->pclk);
-        if (dev->otgclk)
-                clk_enable(dev->otgclk);
-
 
 	temp = readl(USB_USBCMD);
 	temp &= ~ASYNC_INTR_CTRL;
@@ -320,12 +317,19 @@ static int msm_otg_set_peripheral(struct otg_transceiver *xceiv,
 		dev->pmic_register_vbus_sn(&msm_otg_set_vbus_state);
 	USB_INFO("peripheral driver registered w/ tranceiver\n");
 
-	if (is_host())
-		msm_otg_start_host(&dev->otg, 1);
-	else if (is_b_sess_vld())
-		msm_otg_start_peripheral(&dev->otg, 1);
-	else
+	if (is_b_sess_vld()) {
+
+                msm_otg_start_peripheral(&dev->otg, 1);
+                USB_INFO("is_b_sess_vld\n");
+
+	} else if (is_host()) {
+
+                msm_otg_start_host(&dev->otg, 1);
+                USB_INFO("is_host\n");		
+	} else {
 		msm_otg_suspend(dev);
+		USB_INFO("other\n");
+	}
 
 	return 0;
 }
@@ -391,7 +395,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 	struct msm_otg *dev = data;
 	u32 otgsc = 0;
 
-	//return IRQ_NONE;
+	return IRQ_NONE;
 
 	if (dev->in_lpm) {
 		msm_otg_resume(dev);
@@ -428,10 +432,13 @@ static void otg_reset(struct msm_otg *dev)
 	if (dev->phy_reset)
 		dev->phy_reset(dev->regs);
 
+
 	/*disable all phy interrupts*/
 	ulpi_write(dev, 0xFF, 0x0F);
 	ulpi_write(dev, 0xFF, 0x12);
 	msleep(100);
+
+
 
 	writel(USBCMD_RESET, USB_USBCMD);
 	timeout = jiffies + USB_LINK_RESET_TIMEOUT;
@@ -506,21 +513,22 @@ static int __init msm_otg_probe(struct platform_device *pdev)
                 pr_info("%s: rpc_connect(%d)\n", __func__, ret);
         }
 
-	dev->clk = clk_get(NULL, "usb_hs_clk");
+	dev->clk = clk_get(&pdev->dev, "usb_hs_clk");
 	if (IS_ERR(dev->clk)) {
 		pr_err("%s: failed to get usb_hs_clk\n", __func__);
 		ret = PTR_ERR(dev->clk);
 		goto free_dev;
 	}
-	dev->pclk = clk_get(NULL, "usb_hs_pclk");
+	dev->pclk = clk_get(&pdev->dev, "usb_hs_pclk");
 	if (IS_ERR(dev->pclk)) {
 		pr_err("%s: failed to get usb_hs_pclk\n", __func__);
 		ret = PTR_ERR(dev->pclk);
 		goto put_clk;
 	}
 
-	dev->otgclk = clk_get(NULL, "usb_otg_clk");
+	dev->otgclk = clk_get(&pdev->dev, "usb_otg_clk");
 	if (IS_ERR(dev->otgclk)) {
+		pr_err("%s: failed to get usb_otg_clk\n", __func__);
 		dev->otgclk = NULL;
 	}
 
@@ -562,9 +570,19 @@ static int __init msm_otg_probe(struct platform_device *pdev)
 	}
 
 	/* enable clocks */
-	clk_enable(dev->pclk);
 	if (dev->cclk)
 		clk_enable(dev->cclk);
+
+        clk_enable(dev->pclk);
+
+	if(dev->otgclk)
+		clk_enable(dev->otgclk);
+
+	clk_enable(dev->clk);
+
+	writel(0, USB_USBINTR);
+	writel(0, USB_OTGSC);
+
 
 	/* To reduce phy power consumption and to avoid external LDO
 	 * on the board, PMIC comparators can be used to detect VBUS

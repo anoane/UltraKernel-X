@@ -43,6 +43,7 @@
 #include <mach/msm_hsusb.h>
 #include <linux/device.h>
 #include <mach/msm_hsusb_hw.h>
+#include <linux/clk.h>
 #include <mach/clk.h>
 #include <mach/rpc_hsusb.h>
 #include <linux/uaccess.h>
@@ -273,6 +274,45 @@ int usb_register_notifier(struct t_usb_status_notifier *notifier)
         return 0;
 }
 
+
+static unsigned ulpi_read(struct usb_info *ui, unsigned reg)
+{
+	unsigned timeout = 100000;
+
+	/* initiate read operation */
+	writel(ULPI_RUN | ULPI_READ | ULPI_ADDR(reg),
+	       USB_ULPI_VIEWPORT);
+
+	/* wait for completion */
+	while ((readl(USB_ULPI_VIEWPORT) & ULPI_RUN) && (--timeout)) ;
+
+	if (timeout == 0) {
+		USB_ERR("ulpi_read: timeout %08x\n", readl(USB_ULPI_VIEWPORT));
+		return 0xffffffff;
+	}
+	return ULPI_DATA_READ(readl(USB_ULPI_VIEWPORT));
+}
+
+static int ulpi_write(struct usb_info *ui, unsigned val, unsigned reg)
+{
+	unsigned timeout = 10000;
+
+	/* initiate write operation */
+	writel(ULPI_RUN | ULPI_WRITE |
+	       ULPI_ADDR(reg) | ULPI_DATA(val),
+	       USB_ULPI_VIEWPORT);
+
+	/* wait for completion */
+	while ((readl(USB_ULPI_VIEWPORT) & ULPI_RUN) && (--timeout)) ;
+
+	if (timeout == 0) {
+		USB_ERR("ulpi_write: timeout\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 static ssize_t print_switch_name(struct switch_dev *sdev, char *buf)
 {
 	return sprintf(buf, "%s\n", DRIVER_NAME);
@@ -483,49 +523,14 @@ static int usb_ep_get_stall(struct msm_endpoint *ept)
 		return (CTRL_RXS & n) ? 1 : 0;
 }
 
-static unsigned ulpi_read(struct usb_info *ui, unsigned reg)
-{
-	unsigned timeout = 100000;
-
-	/* initiate read operation */
-	writel(ULPI_RUN | ULPI_READ | ULPI_ADDR(reg),
-	       USB_ULPI_VIEWPORT);
-
-	/* wait for completion */
-	while ((readl(USB_ULPI_VIEWPORT) & ULPI_RUN) && (--timeout))
-		;
-
-	if (timeout == 0) {
-		ERROR("ulpi_read: timeout %08x\n", readl(USB_ULPI_VIEWPORT));
-		return 0xffffffff;
-	}
-	return ULPI_DATA_READ(readl(USB_ULPI_VIEWPORT));
-}
-
-static void ulpi_write(struct usb_info *ui, unsigned val, unsigned reg)
-{
-	unsigned timeout = 10000;
-
-	/* initiate write operation */
-	writel(ULPI_RUN | ULPI_WRITE |
-	       ULPI_ADDR(reg) | ULPI_DATA(val),
-	       USB_ULPI_VIEWPORT);
-
-	/* wait for completion */
-	while ((readl(USB_ULPI_VIEWPORT) & ULPI_RUN) && (--timeout))
-		;
-
-	if (timeout == 0)
-		ERROR("ulpi_write: timeout\n");
-}
-
 static void ulpi_init(struct usb_info *ui)
 {
 	int *seq = ui->phy_init_seq;
 
+
 	if (!seq) {
 
-		ERROR("ulpi_init no seq.\n");
+		USB_INFO("ulpi_init no seq.\n");
 		return;
 	}
 
@@ -1172,7 +1177,7 @@ static irqreturn_t usb_interrupt(int irq, void *data)
 	writel(n, USB_USBSTS);
 
 	/* somehow we got an IRQ while in the reset sequence: ignore it */
-	if (ui->running == 0)
+//	if (ui->running == 0)
 		return IRQ_HANDLED;
 
 	if (n & STS_PCI) {
@@ -1345,12 +1350,13 @@ static void usb_reset(struct usb_info *ui)
 	ui->running = 0;
 	spin_unlock_irqrestore(&ui->lock, flags);
 
-	/* add new 2012/12/22 */
+
         /* disable usb interrupts */
         writel(0, USB_USBINTR);
 
         /* wait for a while after enable usb clk*/
         msleep(5);
+
 
 #if 0
 	/* we should flush and shutdown cleanly if already running */
@@ -1365,11 +1371,14 @@ static void usb_reset(struct usb_info *ui)
 	if (ui->phy_reset)
 		ui->phy_reset();
 
-	/* add new 2012/12/22 */
-	msleep(100);
+        msleep(100);
+
         /* RESET */
         writel(2, USB_USBCMD);
         msleep(10);
+
+        writel(0, USB_AHB_BURST);
+        writel(0, USB_AHB_MODE);
 
 	/* select DEVICE mode */
 	writel(0x12, USB_USBMODE);
@@ -1378,26 +1387,7 @@ static void usb_reset(struct usb_info *ui)
 	/* select ULPI phy */
 	writel(0x80000000, USB_PORTSC);
 
-	/* set usb controller interrupt threshold to zero*/
-	writel((readl(USB_USBCMD) & ~USBCMD_ITC_MASK) | USBCMD_ITC(0),
-							USB_USBCMD);
-
-	/* electrical compliance failure in eye-diagram tests
-	 * were observed w/ integrated phy. To avoid failure
-	 * raise signal amplitude to 400mv
-	 */
-	cfg_val = ulpi_read(ui, ULPI_CONFIG_REG);
-	cfg_val |= ULPI_AMPLITUDE_MAX;
-	ulpi_write(ui, cfg_val, ULPI_CONFIG_REG);
-
-	/* fix potential usb stability issues with "integrated phy"
-	 * by enabling unspecified length of INCR burst and using
-	 * the AHB master interface of the AHB2AHB transactor
-	 */
-	writel(0, USB_AHB_BURST);
-	writel(0, USB_AHB_MODE);
-
-	ulpi_init(ui);
+        ulpi_init(ui);
 
 	writel(ui->dma, USB_ENDPOINTLISTADDR);
 
@@ -1519,7 +1509,10 @@ static void usb_do_work(struct work_struct *w)
 
 				msm72k_pm_qos_update(1);
 				pr_info("msm72k_udc: IDLE -> ONLINE, irq: %d\n", otg->irq);
-				otg_set_suspend(ui->xceiv,0);
+
+//        			if (otg->set_clk)
+//                			otg->set_clk(ui->xceiv, 1);
+
 				usb_reset(ui);
 				ret = request_irq(otg->irq, usb_interrupt,
 							IRQF_SHARED,
@@ -1534,7 +1527,9 @@ static void usb_do_work(struct work_struct *w)
 					break;
 				}
 				ui->irq = otg->irq;
+
 				enable_irq_wake(otg->irq);
+
 				msm72k_pullup(&ui->gadget, 1);
 
 				schedule_delayed_work(
@@ -1569,6 +1564,7 @@ static void usb_do_work(struct work_struct *w)
 					msm72k_pm_qos_update(1);
 				pr_info("msm72k_udc: ONLINE -> OFFLINE\n");
 				otg_set_suspend(ui->xceiv, 0);
+
 				/* synchronize with irq context */
 				spin_lock_irqsave(&ui->lock, iflags);
 				ui->running = 0;
@@ -1576,6 +1572,8 @@ static void usb_do_work(struct work_struct *w)
 				ui->remote_wakeup = 0;
 				msm72k_pullup(&ui->gadget, 0);
 				spin_unlock_irqrestore(&ui->lock, iflags);
+
+				msleep(5);
 
 				cancel_delayed_work_sync(&ui->chg_det);
 
@@ -1605,6 +1603,9 @@ static void usb_do_work(struct work_struct *w)
 					printk(KERN_INFO "usb: notify offline\n");
 					ui->driver->disconnect(&ui->gadget);
 				}
+
+				if (ui->phy_reset)
+					ui->phy_reset();
 
 				switch_set_state(&ui->sdev, 0);
 				/* power down phy, clock down usb */
@@ -1695,6 +1696,7 @@ static void usb_do_work(struct work_struct *w)
 				}
 				ui->irq = otg->irq;
 				enable_irq_wake(otg->irq);
+				
 				msm72k_pullup(&ui->gadget, 1);
 
 				schedule_delayed_work(
@@ -2224,22 +2226,25 @@ SW workaround	- Making opmode non-driving and SuspendM set in function
 /* drivers may have software control over D+ pullup */
 static int msm72k_pullup(struct usb_gadget *_gadget, int is_active)
 {
-	struct usb_info *ui = container_of(_gadget, struct usb_info, gadget);
+        struct usb_info *ui = container_of(_gadget, struct usb_info, gadget);
 
-	if (is_active) {
-		if (vbus && ui->driver) {
-			pr_info("enable pullup.\n");
-			writel(readl(USB_USBCMD) | USBCMD_RS, USB_USBCMD);
-		}
-	} else {
+        u32 cmd = (8 << 16);
 
-		pr_info("disable pullup.\n");
-		writel(readl(USB_USBCMD) & ~USBCMD_RS, USB_USBCMD);
-		/* S/W workaround, Issue#1 */
-		ulpi_write(ui, 0x48, 0x04);
-	}
+        /* disable/enable D+ pullup */
+        if (is_active) {
+                USB_INFO("msm_hsusb: enable pullup\n");
+                writel(cmd | 1, USB_USBCMD);
+        } else {
+                USB_INFO("msm_hsusb: disable pullup\n");
+                writel(cmd, USB_USBCMD);
 
-	return 0;
+#ifndef CONFIG_ARCH_MSM7X00A
+                ulpi_write(ui, 0x48, 0x04);
+#endif
+        }
+
+        return 0;
+
 }
 
 static int msm72k_wakeup(struct usb_gadget *_gadget)
@@ -2419,6 +2424,8 @@ static int msm72k_probe(struct platform_device *pdev)
 
 	if (pdev->dev.platform_data) {
 		pdata = pdev->dev.platform_data;
+
+		USB_INFO("udc pdata: %p, seq: %p\n", pdata, pdata->phy_init_seq);
 		ui->phy_reset = pdata->phy_reset;
 		ui->phy_init_seq = pdata->phy_init_seq;
 	}
@@ -2609,7 +2616,7 @@ void msm_hsusb_request_reset(void)
 
 static struct platform_driver usb_driver = {
 	.probe = msm72k_probe,
-	.driver = { .name = "msm_hsusb", },
+	.driver = { .name = "msm_hsusb_udc", },
 };
 
 static int __init init(void)

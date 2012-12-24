@@ -31,7 +31,7 @@
 #include <linux/mtd/partitions.h>
 #include <asm/mach/mmc.h>
 #include <asm/setup.h>
-
+#include <linux/clk.h>
 #include "devices.h"
 #include "clock.h"
 #include "proc_comm.h"
@@ -55,30 +55,6 @@ int usb_phy_error;
 
 #define MFG_GPIO_TABLE_MAX_SIZE        0x400
 static unsigned char mfg_gpio_table[MFG_GPIO_TABLE_MAX_SIZE];
-
-static void internal_phy_reset(void)
-{
-	struct msm_rpc_endpoint *usb_ep;
-	int rc;
-	struct hsusb_phy_start_req {
-		struct rpc_request_hdr hdr;
-	} req;
-
-	printk(KERN_INFO "msm_hsusb_phy_reset\n");
-
-	usb_ep = msm_rpc_connect(HSUSB_API_PROG, HSUSB_API_VERS, 0);
-	if (IS_ERR(usb_ep)) {
-		printk(KERN_ERR "%s: init rpc failed! error: %ld\n",
-				__func__, PTR_ERR(usb_ep));
-		return;
-	}
-	rc = msm_rpc_call(usb_ep, HSUSB_API_INIT_PHY_PROC,
-			&req, sizeof(req), 5 * HZ);
-	if (rc < 0)
-		printk(KERN_ERR "%s: rpc call failed! (%d)\n", __func__, rc);
-
-	msm_rpc_close(usb_ep);
-}
 
 static void *usb_base;
 #define MSM_USB_BASE              ((unsigned)usb_base)
@@ -277,8 +253,6 @@ void msm_hsusb_8x50_phy_reset(void)
 	return;
 }
 
-/* adjust eye diagram, disable vbusvalid interrupts */
-static int hsusb_phy_init_seq[] = { 0x1D, 0x0D, 0x1D, 0x10, -1 };
 
 #ifdef CONFIG_USB_FUNCTION
 static char *usb_functions[] = {
@@ -365,23 +339,6 @@ static struct msm_hsusb_product usb_products[] = {
 };
 #endif
 
-struct msm_hsusb_platform_data msm_hsusb_pdata = {
-	.phy_reset = internal_phy_reset,
-	.phy_init_seq = hsusb_phy_init_seq,
-#ifdef CONFIG_USB_FUNCTION
-	.vendor_id = 0x0bb4,
-	.product_id = 0x0c02,
-	.version = 0x0100,
-	.product_name = "Android Phone",
-	.manufacturer_name = "HTC",
-
-	.functions = usb_functions,
-	.num_functions = ARRAY_SIZE(usb_functions),
-	.products = usb_products,
-	.num_products = ARRAY_SIZE(usb_products),
-#endif
-};
-
 #ifdef CONFIG_USB_FUNCTION
 static struct usb_mass_storage_platform_data mass_storage_pdata = {
 	.nluns = 1,
@@ -399,38 +356,6 @@ static struct platform_device usb_mass_storage_device = {
 		},
 };
 #endif
-
-static struct resource resources_hsusb[] = {
-	{
-		.start	= MSM_HSUSB_PHYS,
-		.end	= MSM_HSUSB_PHYS + MSM_HSUSB_SIZE,
-		.flags	= IORESOURCE_MEM,
-	},
-	{
-		.start	= INT_USB_HS,
-		.end	= INT_USB_HS,
-		.flags	= IORESOURCE_IRQ,
-	},
-#ifdef CONFIG_ARCH_MSM7X30
-	{
-		.name	= "vbus_on",
-		.start	= PM8058_IRQ_CHGVAL,
-		.end	= PM8058_IRQ_CHGVAL,
-		.flags	= IORESOURCE_IRQ,
-	},
-#endif
-};
-
-struct platform_device msm_device_hsusb = {
-	.name		= "msm_hsusb",
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(resources_hsusb),
-	.resource	= resources_hsusb,
-	.dev		= {
-		.coherent_dma_mask	= 0xffffffff,
-		.platform_data = &msm_hsusb_pdata,
-	},
-};
 
 static struct resource resources_hsusb_udc[] = {
         {
@@ -457,7 +382,7 @@ struct platform_device msm_device_hsusb_udc = {
         .name           = "msm_hsusb_udc",
         .id             = -1,
         .num_resources  = ARRAY_SIZE(resources_hsusb_udc),
-        .resource       = resources_hsusb,
+        .resource       = resources_hsusb_udc,
         .dev            = {
                 .coherent_dma_mask      = 0xffffffff,
         },
@@ -510,19 +435,6 @@ struct platform_device msm_device_otg = {
 	},
 };
 
-void __init msm_add_usb_devices(void (*phy_reset) (void), void (*phy_shutdown) (void))
-{
-	/* setup */
-	msm_hsusb_pdata.phy_reset = phy_reset;
-	msm_hsusb_pdata.phy_shutdown = phy_shutdown;
-
-	msm_device_hsusb.dev.platform_data = &msm_hsusb_pdata;
-	platform_device_register(&msm_device_hsusb);
-#ifdef CONFIG_USB_FUNCTION
-	platform_device_register(&usb_mass_storage_device);
-#endif
-}
-
 #ifdef CONFIG_USB_FUNCTION
 void __init msm_set_ums_device_id(int id)
 {
@@ -544,12 +456,6 @@ void __init msm_init_ums_lun(int lun_num)
 {
 	if (lun_num > 0)
 		mass_storage_pdata.nluns = lun_num;
-}
-
-void __init msm_register_usb_phy_init_seq(int *int_seq)
-{
-	if (int_seq)
-		msm_hsusb_pdata.phy_init_seq = int_seq;
 }
 
 void __init msm_register_uart_usb_switch(void (*usb_uart_switch) (int))
@@ -1456,8 +1362,13 @@ struct clk msm_clocks[] = {
 	CLK_ALL("uart_clk", UART3_CLK, &msm_device_uart3.dev, OFF),
 	CLK_ALL("uartdm_clk", UART1DM_CLK, &msm_device_uart_dm1.dev, OFF),
 	CLK_ALL("uartdm_clk", UART2DM_CLK, &msm_device_uart_dm2.dev, OFF),
-	CLK_ALL("usb_hs_clk", USB_HS_CLK, NULL, OFF),
-	CLK_ALL("usb_hs_pclk", USB_HS_PCLK, NULL, OFF),
+#ifdef CONFIG_USB_MSM_OTG_72K
+        CLK_ALL("usb_hs_clk",  USB_HS_CLK,     &msm_device_otg.dev, OFF),
+        CLK_ALL("usb_hs_pclk", USB_HS_PCLK,   &msm_device_otg.dev, OFF),
+#else
+        CLK_ALL("usb_hs_clk",  USB_HS_CLK,     NULL, OFF),
+        CLK_ALL("usb_hs_pclk", USB_HS_PCLK,   NULL, OFF),
+#endif
 	CLK_ALL("usb_otg_clk", USB_OTG_CLK, NULL, 0),
 	CLK_ALL("vdc_clk", VDC_CLK, NULL, OFF | MINMAX),
 	CLK_ALL("vfe_clk", VFE_CLK, NULL, OFF),

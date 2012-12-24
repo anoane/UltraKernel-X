@@ -1,6 +1,6 @@
 #!/bin/bash
 MAKEFLAGS='-j32'
-CROSS_COMPILE=/arm/android/source/prebuilt/linux-x86/toolchain/arm-eabi-4.4.0/bin/arm-eabi-
+CROSS_COMPILE=/arm/android/source/prebuilt/linux-x86/toolchain/arm-eabi-4.4.3/bin/arm-eabi-
 ARCH=arm
 KERNEL_BUILD_PATH=./
 

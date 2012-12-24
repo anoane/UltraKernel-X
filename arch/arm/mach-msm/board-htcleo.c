@@ -353,10 +353,9 @@ static struct msm_usb_host_platform_data msm_usb_host2_pdata = {
 #endif
 
 
-struct msm_hsusb_platform_data msm_hsusb_udc_pdata = {
+struct msm_hsusb_gadget_platform_data msm_hsusb_udc_pdata = {
         .phy_init_seq           = htcleo_phy_init_seq,
         .phy_reset              = msm_hsusb_8x50_phy_reset,
-        .accessory_detect = 0, /* detect by ID pin gpio */
 };
 
 static int hsusb_rpc_connect(int connect)
@@ -378,11 +377,6 @@ static struct msm_otg_platform_data msm_otg_pdata = {
 };
 
 #ifdef CONFIG_USB_ANDROID
-static struct msm_hsusb_platform_data msm_hsusb_pdata = {
-	.phy_init_seq		= htcleo_phy_init_seq,
-	.phy_reset		= msm_hsusb_8x50_phy_reset,
-	.accessory_detect = 0, /* detect by ID pin gpio */
-};
 
 static struct usb_mass_storage_platform_data mass_storage_pdata = {
 	.nluns		= 1,
@@ -467,11 +461,21 @@ static void htcleo_init_usb_devices(void)
 		android_usb_pdata.product_id;
 	android_usb_pdata.serial_number = board_serialno();
 
-	msm_hsusb_pdata.serial_number = board_serialno();
-	msm_device_hsusb.dev.platform_data = &msm_hsusb_udc_pdata;
+        msm_hsusb_udc_pdata.swfi_latency =
+                msm_pm_data
+                [MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].latency;
+
+	msm_device_hsusb_udc.dev.platform_data = &msm_hsusb_udc_pdata;
+
 
 	config_gpio_table(usb_phy_3v3_table, ARRAY_SIZE(usb_phy_3v3_table));
 	gpio_set_value(HTCLEO_GPIO_USBPHY_3V3_ENABLE, 1);
+
+        platform_device_register(&usb_mass_storage_device);
+#ifdef CONFIG_USB_ANDROID_RNDIS
+        platform_device_register(&rndis_device);
+#endif
+        platform_device_register(&android_usb_device);
 
 #ifdef CONFIG_USB_MSM_OTG_72K
 	msm_device_otg.dev.platform_data = &msm_otg_pdata;
@@ -487,6 +491,7 @@ static void htcleo_init_usb_devices(void)
                 return;
         }
 
+        platform_device_register(&msm_device_hsusb_udc);
 
 #ifdef CONFIG_USB_EHCI_MSM
         msm_device_hsusb_host.dev.platform_data = &msm_usb_host_pdata;
@@ -499,14 +504,6 @@ static void htcleo_init_usb_devices(void)
         msm_device_hsusb_udc.dev.platform_data = &msm_hsusb_udc_pdata;
 	platform_device_register(&msm_device_hsusb_udc);
 #endif
-	platform_device_register(&msm_device_hsusb);
-	
-	platform_device_register(&usb_mass_storage_device);
-#ifdef CONFIG_USB_ANDROID_RNDIS
-	platform_device_register(&rndis_device);
-#endif
-	platform_device_register(&android_usb_device);
-
 
 }
 
