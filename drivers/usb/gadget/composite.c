@@ -2,6 +2,7 @@
  * composite.c - infrastructure for Composite USB Gadgets
  *
  * Copyright (C) 2006-2008 David Brownell
+ * Copyright (C) 2010-2011 Sony Ericsson Mobile Communications AB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -69,13 +70,69 @@ static char *iSerialNumber;
 module_param(iSerialNumber, charp, 0);
 MODULE_PARM_DESC(iSerialNumber, "SerialNumber string");
 
+#ifdef CONFIG_USB_ANDROID_MTP_ARICENT
+
+/* microsoft os descriptor */
+#define MSOS_DESC_VERSION		0x0100
+#define MSOS_FEATURE_INDEX		4
+
+#define MSOS_STRING_DESC_INDEX		0xEE
+#define MSOS_FEATURE_DESCRIPTOR		0xc0
+#define MSOS_VENDOR_CODE		0x08
+#define MSOS_VENDOR_EXTN_INDEX		0x0004
+
+struct ms_os_desc {
+	unsigned char bLength;
+	unsigned char bDescriptorType;
+	unsigned char qwSignature[14];
+	unsigned char bMS_VendorCode;
+	unsigned char bPad;
+} __attribute__((__packed__));
+
+static struct ms_os_desc str_ms_os_desc = {
+	.bLength = 0x12,
+	.bDescriptorType = USB_DT_STRING,
+
+	/* MSFT100 */
+	.qwSignature = {'M', 0x00, 'S', 0x00,
+			'F', 0x00, 'T', 0x00,
+			'1', 0x00, '0', 0x00,
+			'0', 0x00},
+	.bMS_VendorCode = MSOS_VENDOR_CODE,
+
+	/* for windows 7 */
+	.bPad = 0x02,
+};
+
+/* extend compat ID descriptor(header section) */
+struct ms_ext_compatID_desc_head {
+	unsigned int dwLength;
+	unsigned short bcdVersion;
+	unsigned short wIndex;
+	unsigned char bCount;
+	unsigned char reserved[7];
+};
+
+/* extend compat ID descriptor(data section) */
+struct ms_ext_compatID_desc_data{
+	unsigned char bFirstInterfaceNumber;
+	unsigned char reserved1;
+	unsigned char compatibleID[8];
+	unsigned char subCompatibleID[8];
+	unsigned char reserved2[6];
+};
+
+static struct usb_function *mtp_function;
+static struct usb_configuration *mtp_config;
+#endif
+
 /*-------------------------------------------------------------------------*/
 
 static ssize_t enable_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	struct usb_function *f = dev_get_drvdata(dev);
-	return sprintf(buf, "%d\n", !f->hidden);
+	return sprintf(buf, "%d\n", f->enabled);
 }
 
 static ssize_t enable_store(
@@ -87,16 +144,44 @@ static ssize_t enable_store(
 	int value;
 
 	sscanf(buf, "%d", &value);
+
+	if (f->set_func_type)
+		f->set_func_type(f, value);
+
 	if (driver->enable_function)
 		driver->enable_function(f, value);
 	else
-		f->hidden = !value;
+		usb_function_set_enabled(f, value);
 
 	return size;
 }
 
 static DEVICE_ATTR(enable, S_IRUGO | S_IWUSR, enable_show, enable_store);
 
+void usb_function_set_enabled(struct usb_function *f, int enabled)
+{
+	f->enabled = enabled;
+	kobject_uevent(&f->dev->kobj, KOBJ_CHANGE);
+}
+
+
+void usb_composite_force_reset(struct usb_composite_dev *cdev)
+{
+	unsigned long			flags;
+
+	spin_lock_irqsave(&cdev->lock, flags);
+	/* force reenumeration */
+	if (cdev && cdev->gadget && cdev->gadget->speed != USB_SPEED_UNKNOWN) {
+		cdev->switching_composition = 1;
+		spin_unlock_irqrestore(&cdev->lock, flags);
+
+		usb_gadget_disconnect(cdev->gadget);
+		msleep(10);
+		usb_gadget_connect(cdev->gadget);
+	} else {
+		spin_unlock_irqrestore(&cdev->lock, flags);
+	}
+}
 
 /**
  * usb_add_function() - add a function to a configuration
@@ -264,38 +349,16 @@ int __init usb_interface_id(struct usb_configuration *config,
 
 	if (id < MAX_CONFIG_INTERFACES) {
 		config->interface[id] = function;
+#ifdef CONFIG_USB_ANDROID_MTP_ARICENT
+		if (!strcmp(function->name, "mtp")) {
+			mtp_function = function;
+			mtp_config = config;
+		}
+#endif
 		config->next_interface_id = id + 1;
 		return id;
 	}
 	return -ENODEV;
-}
-
-static struct usb_function *get_function_by_intf(struct usb_composite_dev *cdev,
-		int intf)
-{
-	struct usb_configuration *config = cdev->config;
-	enum usb_device_speed	speed = cdev->gadget->speed;
-	struct usb_function *f;
-	struct usb_descriptor_header *descriptor;
-	struct usb_interface_descriptor *intf_desc;
-	int i;
-	for (i = 0; i < MAX_CONFIG_INTERFACES; i++) {
-		f = config->interface[i];
-		if (!f)
-			return NULL;
-		if (f->hidden)
-			continue;
-
-		if (speed == USB_SPEED_HIGH)
-			descriptor = *(f->hs_descriptors);
-		else
-			descriptor = *(f->descriptors);
-		intf_desc = (struct usb_interface_descriptor *)descriptor;
-		if (intf_desc->bDescriptorType == USB_DT_INTERFACE &&
-			intf_desc->bInterfaceNumber == intf)
-			return f;
-	}
-	return NULL;
 }
 
 static int config_buf(struct usb_configuration *config,
@@ -339,7 +402,7 @@ static int config_buf(struct usb_configuration *config,
 			descriptors = f->hs_descriptors;
 		else
 			descriptors = f->descriptors;
-		if (f->hidden || !descriptors || descriptors[0] == NULL)
+		if (!f->enabled || !descriptors || descriptors[0] == NULL)
 			continue;
 		status = usb_descriptor_fillbuf(next, len,
 			(const struct usb_descriptor_header **) descriptors);
@@ -351,9 +414,11 @@ static int config_buf(struct usb_configuration *config,
 		while ((descriptor = *descriptors++) != NULL) {
 			intf = (struct usb_interface_descriptor *)dest;
 			if (intf->bDescriptorType == USB_DT_INTERFACE) {
-				intf->bInterfaceNumber = interfaceCount;
-				intf = (struct usb_interface_descriptor *)descriptor;
-				intf->bInterfaceNumber = interfaceCount++;
+				/* don't increment bInterfaceNumber for alternate settings */
+				if (intf->bAlternateSetting == 0)
+					intf->bInterfaceNumber = interfaceCount++;
+				else
+					intf->bInterfaceNumber = interfaceCount - 1;
 			}
 			dest += intf->bLength;
 		}
@@ -508,6 +573,8 @@ static int set_config(struct usb_composite_dev *cdev,
 
 		if (!f)
 			break;
+		if (!f->enabled)
+			continue;
 
 		result = f->set_alt(f, tmp, 0);
 		if (result < 0) {
@@ -523,6 +590,8 @@ static int set_config(struct usb_composite_dev *cdev,
 	power = c->bMaxPower ? (2 * c->bMaxPower) : CONFIG_USB_GADGET_VBUS_DRAW;
 done:
 	usb_gadget_vbus_draw(gadget, power);
+
+	schedule_work(&cdev->switch_work);
 	return result;
 }
 
@@ -756,6 +825,7 @@ static void composite_setup_complete(struct usb_ep *ep, struct usb_request *req)
 				"setup complete --> %d, %d/%d\n",
 				req->status, req->actual, req->length);
 }
+
 /*
  * The setup() callback implements all the ep0 functionality that's
  * not handled lower down, in hardware or the hardware driver(like
@@ -774,6 +844,17 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	u16				w_value = le16_to_cpu(ctrl->wValue);
 	u16				w_length = le16_to_cpu(ctrl->wLength);
 	struct usb_function		*f = NULL;
+	unsigned long			flags;
+
+	spin_lock_irqsave(&cdev->lock, flags);
+	if (!cdev->connected) {
+		cdev->connected = 1;
+		if (cdev->switching_composition) {
+			cdev->switching_composition = 0;
+			schedule_work(&cdev->switch_work);
+		}
+	}
+	spin_unlock_irqrestore(&cdev->lock, flags);
 
 	/* partial re-init of the response message; the function or the
 	 * gadget might need to intercept e.g. a control-OUT completion
@@ -815,6 +896,16 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				value = min(w_length, (u16) value);
 			break;
 		case USB_DT_STRING:
+#ifdef CONFIG_USB_ANDROID_MTP_ARICENT
+			if ((w_value & 0xff) == MSOS_STRING_DESC_INDEX
+				&& mtp_function
+				&& mtp_function->enabled) {
+				value = min(w_length,
+					(u16) sizeof(str_ms_os_desc));
+				memcpy(req->buf, &str_ms_os_desc, value);
+				break;
+			}
+#endif
 			value = get_string(cdev, req->buf,
 					w_index, w_value & 0xff);
 			if (value >= 0)
@@ -857,7 +948,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
 			break;
-		f = get_function_by_intf(cdev, intf);
+		f = cdev->config->interface[intf];
 		if (!f)
 			break;
 		if (w_value && !f->set_alt)
@@ -869,7 +960,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
 			break;
-		f = get_function_by_intf(cdev, intf);
+		f = cdev->config->interface[intf];
 		if (!f)
 			break;
 		/* lots of interfaces only need altsetting zero... */
@@ -886,6 +977,56 @@ unknown:
 			ctrl->bRequestType, ctrl->bRequest,
 			w_value, w_index, w_length);
 
+#ifdef CONFIG_USB_ANDROID_MTP_ARICENT
+		if (ctrl->bRequestType == MSOS_FEATURE_DESCRIPTOR
+			&& ctrl->bRequest == MSOS_VENDOR_CODE
+			&& w_index == MSOS_VENDOR_EXTN_INDEX
+			&& mtp_function
+			&& mtp_function->enabled) {
+			int i;
+			int total;
+			int func_num = 0;
+			struct ms_ext_compatID_desc_head *head;
+			struct ms_ext_compatID_desc_data *data;
+			struct usb_function *f;
+
+			head = (struct ms_ext_compatID_desc_head *)req->buf;
+			data = (struct ms_ext_compatID_desc_data *)(head + 1);
+
+			/* zero clear */
+			memset(req->buf, 0x00, cdev->bufsiz);
+
+			/* data section */
+			for (i = 0; i < MAX_CONFIG_INTERFACES; i++) {
+				f = mtp_config->interface[i];
+
+				if (!f)
+					break;
+				if (!f->enabled)
+					continue;
+
+				data->bFirstInterfaceNumber = func_num;
+				data->reserved1 = 1;
+				if (!strcmp(f->name, "mtp"))
+					memcpy(data->compatibleID, "MTP", 3);
+				data++;
+				func_num++;
+
+			}
+
+			total = sizeof(*head) + (sizeof(*data) * func_num);
+
+			/* header section */
+			head->dwLength = total;
+			head->bcdVersion = MSOS_DESC_VERSION;
+			head->wIndex = MSOS_FEATURE_INDEX;
+			head->bCount = func_num;
+
+			value = min(w_length, (u16)total);
+			break;
+		}
+#endif
+
 		/* functions always handle their interfaces ... punt other
 		 * recipients (endpoint, other, WUSB, ...) to the current
 		 * configuration code.
@@ -896,11 +1037,24 @@ unknown:
 		 */
 		if ((ctrl->bRequestType & USB_RECIP_MASK)
 				== USB_RECIP_INTERFACE) {
+			int tmp = intf;
+			int id = 0;
 			if (cdev->config == NULL)
 				return value;
 
-			f = get_function_by_intf(cdev, intf);
-			if (f && f->setup)
+			/* Find correct function */
+			for (id = 0; id < MAX_CONFIG_INTERFACES; id++) {
+				f = cdev->config->interface[id];
+				if (!f)
+					break;
+				if (!f->enabled)
+					continue;
+				if (!tmp)
+					break;
+				tmp--;
+			}
+
+			if (!tmp && f && f->setup)
 				value = f->setup(f, ctrl);
 			else
 				f = NULL;
@@ -963,6 +1117,9 @@ static void composite_disconnect(struct usb_gadget *gadget)
 	spin_lock_irqsave(&cdev->lock, flags);
 	if (cdev->config)
 		reset_config(cdev);
+
+	cdev->connected = 0;
+	schedule_work(&cdev->switch_work);
 	spin_unlock_irqrestore(&cdev->lock, flags);
 }
 
@@ -1012,9 +1169,16 @@ composite_unbind(struct usb_gadget *gadget)
 		kfree(cdev->req->buf);
 		usb_ep_free_request(gadget->ep0, cdev->req);
 	}
+
+	switch_dev_unregister(&cdev->sw_connected);
+	switch_dev_unregister(&cdev->sw_config);
 	kfree(cdev);
 	set_gadget_data(gadget, NULL);
 	composite = NULL;
+#ifdef CONFIG_USB_ANDROID_MTP_ARICENT
+	mtp_config = NULL;
+	mtp_function = NULL;
+#endif
 }
 
 static void __init
@@ -1039,6 +1203,29 @@ string_override(struct usb_gadget_strings **tab, u8 id, const char *s)
 	}
 }
 
+static void
+composite_switch_work(struct work_struct *data)
+{
+	struct usb_composite_dev	*cdev =
+		container_of(data, struct usb_composite_dev, switch_work);
+	struct usb_configuration *config = cdev->config;
+	int connected;
+	unsigned long flags;
+
+	spin_lock_irqsave(&cdev->lock, flags);
+	if (cdev->connected != cdev->sw_connected.state) {
+		connected = cdev->connected;
+		spin_unlock_irqrestore(&cdev->lock, flags);
+		switch_set_state(&cdev->sw_connected, connected);
+	} else {
+		spin_unlock_irqrestore(&cdev->lock, flags);
+	}
+
+	if (config)
+		switch_set_state(&cdev->sw_config, config->bConfigurationValue);
+	else
+		switch_set_state(&cdev->sw_config, 0);
+}
 static int __init composite_bind(struct usb_gadget *gadget)
 {
 	struct usb_composite_dev	*cdev;
@@ -1081,6 +1268,16 @@ static int __init composite_bind(struct usb_gadget *gadget)
 	status = composite->bind(cdev);
 	if (status < 0)
 		goto fail;
+
+	cdev->sw_connected.name = "usb_connected";
+	status = switch_dev_register(&cdev->sw_connected);
+	if (status < 0)
+		goto fail;
+	cdev->sw_config.name = "usb_configuration";
+	status = switch_dev_register(&cdev->sw_config);
+	if (status < 0)
+		goto fail;
+	INIT_WORK(&cdev->switch_work, composite_switch_work);
 
 	cdev->desc = *composite->dev;
 	cdev->desc.bMaxPacketSize0 = gadget->ep0->maxpacket;
@@ -1156,6 +1353,23 @@ composite_resume(struct usb_gadget *gadget)
 	}
 }
 
+static int
+composite_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	struct usb_function *f = dev_get_drvdata(dev);
+
+	if (!f) {
+		/* this happens when the device is first created */
+		return 0;
+	}
+
+	if (add_uevent_var(env, "FUNCTION=%s", f->name))
+		return -ENOMEM;
+	if (add_uevent_var(env, "ENABLED=%d", f->enabled))
+		return -ENOMEM;
+	return 0;
+}
+
 /*-------------------------------------------------------------------------*/
 
 static struct usb_gadget_driver composite_driver = {
@@ -1204,6 +1418,7 @@ int __init usb_composite_register(struct usb_composite_driver *driver)
 	driver->class = class_create(THIS_MODULE, "usb_composite");
 	if (IS_ERR(driver->class))
 		return PTR_ERR(driver->class);
+	driver->class->dev_uevent = composite_uevent;
 
 	return usb_gadget_register_driver(&composite_driver);
 }

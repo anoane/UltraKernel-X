@@ -2,6 +2,7 @@
  * composite.h -- framework for usb gadgets which are composite devices
  *
  * Copyright (C) 2006-2008 David Brownell
+ * Copyright (C) 2010-2011 Sony Ericsson Mobile Communications AB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,8 +37,9 @@
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/switch.h>
 
-
+struct usb_composite_dev;
 struct usb_configuration;
 
 /**
@@ -100,7 +102,7 @@ struct usb_function {
 	struct usb_descriptor_header	**hs_descriptors;
 
 	struct usb_configuration	*config;
-	int				hidden;
+	int				enabled;
 
 	/* REVISIT:  bind() functions can be marked __init, which
 	 * makes trouble for section mismatch analysis.  See if
@@ -124,6 +126,7 @@ struct usb_function {
 					const struct usb_ctrlrequest *);
 	void			(*suspend)(struct usb_function *);
 	void			(*resume)(struct usb_function *);
+	void			(*set_func_type)(struct usb_function *, int);
 
 	/* private: */
 	/* internals */
@@ -137,6 +140,8 @@ int usb_function_deactivate(struct usb_function *);
 int usb_function_activate(struct usb_function *);
 
 int usb_interface_id(struct usb_configuration *, struct usb_function *);
+void usb_function_set_enabled(struct usb_function *, int);
+void usb_composite_force_reset(struct usb_composite_dev *);
 
 /**
  * ep_choose - select descriptor endpoint at current device speed
@@ -344,6 +349,18 @@ struct usb_composite_dev {
 
 	/* protects at least deactivation count */
 	spinlock_t			lock;
+
+	/* switch indicating connected/disconnected state */
+	struct switch_dev		sw_connected;
+	/* switch indicating current configuration */
+	struct switch_dev		sw_config;
+	/* current connected state for sw_connected */
+	bool				connected;
+
+	/* used by usb_composite_force_reset to raise switch event */
+	bool				switching_composition;
+
+	struct work_struct switch_work;
 };
 
 extern int usb_string_id(struct usb_composite_dev *c);

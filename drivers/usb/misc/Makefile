@@ -26,6 +26,7 @@ obj-$(CONFIG_USB_SEVSEG)	+= usbsevseg.o
 obj-$(CONFIG_USB_VST)		+= vstusb.o
 
 obj-$(CONFIG_USB_SISUSBVGA)	+= sisusbvga/
+obj-$(CONFIG_USB_EHSET_TEST_FIXTURE) += ehset.o
 
 ifeq ($(CONFIG_USB_DEBUG),y)
 EXTRA_CFLAGS += -DDEBUG

@@ -953,6 +953,21 @@ static void pc_clk_disable(uint32_t id)
 	}
 }
 
+int pc_clk_reset(unsigned id, enum clk_reset_action action)
+{
+         int rc;
+
+        if (action == CLK_RESET_ASSERT)
+                 rc = msm_proc_comm(PCOM_CLKCTL_RPC_RESET_ASSERT, &id, NULL);
+        else
+                 rc = msm_proc_comm(PCOM_CLKCTL_RPC_RESET_DEASSERT, &id, NULL);
+
+         if (rc < 0)
+                 return rc;
+         else
+                return (int)id < 0 ? -EINVAL : 0;
+}
+
 static int pc_clk_set_rate(uint32_t id, unsigned long rate)
 {
 	int retval, r;
@@ -1075,6 +1090,20 @@ static int pc_pll_request(unsigned id, unsigned on)
 	return 0;
 }
 
+struct clk_ops clk_ops_pcom = {
+        .enable = pc_clk_enable,
+        .disable = pc_clk_disable,
+        .auto_off = pc_clk_disable,
+        .reset = pc_clk_reset,
+        .set_rate = pc_clk_set_rate,
+        .set_min_rate = pc_clk_set_min_rate,
+        .set_max_rate = pc_clk_set_max_rate,
+        .set_flags = pc_clk_set_flags,
+        .get_rate = pc_clk_get_rate,
+        .is_enabled = pc_clk_is_enabled,
+        .round_rate = pc_clk_round_rate,
+};
+     
 /*
  * Standard clock functions defined in include/linux/clk.h
  */
@@ -1132,26 +1161,30 @@ void clk_disable(struct clk *clk)
 }
 EXPORT_SYMBOL(clk_disable);
 
-int pc_clk_reset(unsigned id, enum clk_reset_action action)
-{
-         int rc;
- 
-        if (action == CLK_RESET_ASSERT)
-                 rc = msm_proc_comm(PCOM_CLKCTL_RPC_RESET_ASSERT, &id, NULL);
-        else
-                 rc = msm_proc_comm(PCOM_CLKCTL_RPC_RESET_DEASSERT, &id, NULL);
- 
-         if (rc < 0)
-                 return rc;
-         else
-                return (int)id < 0 ? -EINVAL : 0;
-}
-
 int clk_reset(struct clk *clk, enum clk_reset_action action)
 {
+
+//
+////	this function is ported from SE x10
+////
+//
+        int ret = -EPERM;
+
+	pr_info("clk_reset: %p, id=%d, rid=%d.\n", clk, clk->id, clk->remote_id);
+
+        /* Try clk->ops->reset() and fallback to a remote reset if it fails. */
+        if (clk->ops->reset != NULL)
+                ret = clk->ops->reset(clk->id, action);
+//        if (ret == -EPERM && clk_ops_pcom.reset != NULL)
+//                ret = clk_ops_pcom.reset(clk->remote_id, action);
+
+        return ret;
+
+#if 0
 	if (!clk->ops->reset)
 		clk->ops->reset = &pc_clk_reset;
 	return clk->ops->reset(clk->remote_id, action);
+#endif
 }
 EXPORT_SYMBOL(clk_reset);
 
@@ -1331,16 +1364,3 @@ static int __init clock_late_init(void)
 }
 late_initcall(clock_late_init);
 
-struct clk_ops clk_ops_pcom = {
-	.enable = pc_clk_enable,
-	.disable = pc_clk_disable,
-	.auto_off = pc_clk_disable,
-	.reset = pc_clk_reset,
-	.set_rate = pc_clk_set_rate,
-	.set_min_rate = pc_clk_set_min_rate,
-	.set_max_rate = pc_clk_set_max_rate,
-	.set_flags = pc_clk_set_flags,
-	.get_rate = pc_clk_get_rate,
-	.is_enabled = pc_clk_is_enabled,
-	.round_rate = pc_clk_round_rate,
-};

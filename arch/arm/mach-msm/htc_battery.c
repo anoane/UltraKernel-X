@@ -450,7 +450,7 @@ static int htc_battery_status_update(u32 curr_level)
 	notify = (htc_batt_info.rep.level != curr_level);
 	htc_batt_info.rep.level = curr_level;
 	mutex_unlock(&htc_batt_info.lock);
-#if 0
+#if 1
 	if (notify) {
 		power_supply_changed(&htc_power_supplies[CHARGER_BATTERY]);
 		if (htc_batt_debug_mask & HTC_BATT_DEBUG_UEVT)

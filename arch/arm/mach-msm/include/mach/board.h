@@ -266,6 +266,10 @@ struct shared_ramfs_table {
 int __init rmt_storage_add_ramfs(void);
 #endif
 
+struct msm_usb_host_platform_data;
+int __init msm_add_host(unsigned int host,
+                struct msm_usb_host_platform_data *plat);
+
 #if defined(CONFIG_USB_FUNCTION_MSM_HSUSB) || defined(CONFIG_USB_MSM_72K)
 void msm_hsusb_set_vbus_state(int online);
 /* START: add USB connected notify function */

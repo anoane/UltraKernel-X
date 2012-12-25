@@ -45,6 +45,7 @@
 #include <asm/setup.h>
 
 #include <mach/vreg.h>
+#include <mach/mpp.h>
 #include <mach/board.h>
 #include <mach/board_htc.h>
 #include <mach/hardware.h>
@@ -306,6 +307,28 @@ static struct i2c_board_info base_i2c_devices[] =
 // USB
 ///////////////////////////////////////////////////////////////////////
 
+#ifdef CONFIG_USB_FS_HOST
+static struct msm_gpio fsusb_config[] = {
+        { GPIO_CFG(139, 2, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA), "fs_dat" },
+        { GPIO_CFG(140, 2, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA), "fs_se0" },
+        { GPIO_CFG(141, 3, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA), "fs_oe_n" },
+};
+
+static int fsusb_gpio_init(void)
+{
+        return msm_gpios_request(fsusb_config, ARRAY_SIZE(fsusb_config));
+}
+
+static void msm_fsusb_setup_gpio(unsigned int enable)
+{
+        if (enable)
+                msm_gpios_enable(fsusb_config, ARRAY_SIZE(fsusb_config));
+        else
+                msm_gpios_disable(fsusb_config, ARRAY_SIZE(fsusb_config));
+
+}
+#endif
+
 static uint32_t usb_phy_3v3_table[] =
 {
     PCOM_GPIO_CFG(HTCLEO_GPIO_USBPHY_3V3_ENABLE, 0, GPIO_OUTPUT, GPIO_NO_PULL, GPIO_4MA)
@@ -340,8 +363,9 @@ static void msm_hsusb_vbus_power(unsigned phy_info, int on)
 
 static struct msm_usb_host_platform_data msm_usb_host_pdata = {
         .phy_info       = (USB_PHY_INTEGRATED | USB_PHY_MODEL_180NM),
-        .phy_reset = msm_hsusb_8x50_phy_reset,
-        .vbus_power = msm_hsusb_vbus_power,
+};
+
+static struct msm_hsusb_platform_data msm_hsusb_pdata = {
 };
 
 #ifdef CONFIG_USB_FS_HOST
@@ -352,12 +376,6 @@ static struct msm_usb_host_platform_data msm_usb_host2_pdata = {
 };
 #endif
 
-
-struct msm_hsusb_gadget_platform_data msm_hsusb_udc_pdata = {
-        .phy_init_seq           = htcleo_phy_init_seq,
-        .phy_reset              = msm_hsusb_8x50_phy_reset,
-};
-
 static int hsusb_rpc_connect(int connect)
 {
         if (connect)
@@ -366,15 +384,43 @@ static int hsusb_rpc_connect(int connect)
                 return msm_hsusb_rpc_close();
 }
 
+static int msm_hsusb_pmic_notif_init(void (*callback)(int online), int init)
+{
+        int ret;
+
+        if (init) {
+                ret = msm_pm_app_rpc_init(callback);
+        } else {
+                msm_pm_app_rpc_deinit(callback);
+                ret = 0;
+        }
+        return ret;
+}
+static int msm_hsusb_ldo_init(int init);
+static int msm_hsusb_ldo_enable(int enable);
+
+/* Driver(s) to be notified upon change in USB */
+static char *hsusb_chg_supplied_to[] = {
+        "battery",
+};
+
 static struct msm_otg_platform_data msm_otg_pdata = {
         .rpc_connect    = hsusb_rpc_connect,
-        .phy_reset      = msm_hsusb_8x50_phy_reset,
-        .pmic_notif_init         = msm_pm_app_rpc_init,
-        .pmic_notif_deinit       = msm_pm_app_rpc_deinit,
-        .pmic_register_vbus_sn   = msm_pm_app_register_vbus_sn,
-        .pmic_unregister_vbus_sn = msm_pm_app_unregister_vbus_sn,
-        .pmic_enable_ldo         = msm_pm_app_enable_usb_ldo,
+        .pmic_notif_init         = msm_hsusb_pmic_notif_init,
+        .pemp_level              = PRE_EMPHASIS_WITH_10_PERCENT,
+        .cdr_autoreset           = CDR_AUTO_RESET_DEFAULT,
+        .drv_ampl                = HS_DRV_AMPLITUDE_5_PERCENT,
+        .vbus_power              = msm_hsusb_vbus_power,
+        .chg_vbus_draw           = hsusb_chg_vbus_draw,
+        .chg_connected           = hsusb_chg_connected,
+        .chg_init                = hsusb_chg_init,
+        .phy_can_powercollapse   = 1,
+        .ldo_init                = msm_hsusb_ldo_init,
+        .ldo_enable              = msm_hsusb_ldo_enable,
+	//.phy_reset		 = msm_hsusb_8x50_phy_reset,
 };
+
+static struct msm_hsusb_gadget_platform_data msm_gadget_pdata;
 
 #ifdef CONFIG_USB_ANDROID
 
@@ -455,32 +501,139 @@ static struct msm_pm_platform_data msm_pm_data[MSM_PM_SLEEP_MODE_NR] = {
 	[MSM_PM_SLEEP_MODE_WAIT_FOR_INTERRUPT].residency = 0,
 };
 
+static void usb_mpp_init(void)
+{
+        unsigned rc;
+        unsigned mpp_usb = 20;
+
+//        if (machine_is_qsd8x50_ffa()) {
+                rc = mpp_config_digital_out(mpp_usb,
+                        MPP_CFG(MPP_DLOGIC_LVL_VDD,
+                                MPP_DLOGIC_OUT_CTRL_HIGH));
+                if (rc)
+                        pr_err("%s: configuring mpp pin"
+                                "to enable 3.3V LDO failed\n", __func__);
+//        }
+}
+
+
+/* TBD: 8x50 FFAs have internal 3p3 voltage regulator as opposed to
+ * external 3p3 voltage regulator on Surf platform. There is no way
+ * s/w can detect fi concerned regulator is internal or external to
+ * to MSM. Internal 3p3 regulator is powered through boost voltage
+ * regulator where as external 3p3 regulator is powered through VPH.
+ * So for internal voltage regulator it is required to power on
+ * boost voltage regulator first. Unfortunately some of the FFAs are
+ * re-worked to install external 3p3 regulator. For now, assuming all
+ * FFAs have 3p3 internal regulators and all SURFs have external 3p3
+ * regulator as there is no way s/w can determine if theregulator is
+ * internal or external. May be, we can implement this flag as kernel
+ * boot parameters so that we can change code behaviour dynamically
+ */
+static int regulator_3p3_is_internal;
+static struct vreg *vreg_5v;
+static struct vreg *vreg_3p3;
+static int msm_hsusb_ldo_init(int init)
+{
+        if (init) {
+                if (regulator_3p3_is_internal) {
+                        vreg_5v = vreg_get(NULL, "boost");
+                        if (IS_ERR(vreg_5v))
+                                return PTR_ERR(vreg_5v);
+                        vreg_set_level(vreg_5v, 5000);
+                }
+
+                vreg_3p3 = vreg_get(NULL, "usb");
+                if (IS_ERR(vreg_3p3))
+                        return PTR_ERR(vreg_3p3);
+                vreg_set_level(vreg_3p3, 3300);
+        } else {
+                if (regulator_3p3_is_internal)
+                        vreg_put(vreg_5v);
+                vreg_put(vreg_3p3);
+        }
+
+        return 0;
+}
+
+static int msm_hsusb_ldo_enable(int enable)
+{
+        static int ldo_status;
+        int ret;
+
+        if (ldo_status == enable)
+                return 0;
+
+        if (regulator_3p3_is_internal && (!vreg_5v || IS_ERR(vreg_5v)))
+                return -ENODEV;
+        if (!vreg_3p3 || IS_ERR(vreg_3p3))
+                return -ENODEV;
+
+        ldo_status = enable;
+
+        if (enable) {
+                if (regulator_3p3_is_internal) {
+                        ret = vreg_enable(vreg_5v);
+                        if (ret)
+                                return ret;
+
+                        /* power supply to 3p3 regulator can vary from
+                         * USB VBUS or VREG 5V. If the power supply is
+                         * USB VBUS cable disconnection cannot be
+                         * deteted. Select power supply to VREG 5V                                                     */
+                        /* TBD: comeup with a better name */
+                        ret = pmic_vote_3p3_pwr_sel_switch(1);
+                        if (ret)
+                                return ret;
+                }
+                ret = vreg_enable(vreg_3p3);
+
+                return ret;
+        } else {
+                if (regulator_3p3_is_internal) {
+                        ret = vreg_disable(vreg_5v);
+                        if (ret)
+                                return ret;
+                        ret = pmic_vote_3p3_pwr_sel_switch(0);
+                        if (ret)
+                                return ret;
+                }
+                        ret = vreg_disable(vreg_3p3);
+
+                        return ret;
+        }
+}
 static void htcleo_init_usb_devices(void)
 {
 	android_usb_pdata.products[0].product_id =
 		android_usb_pdata.product_id;
 	android_usb_pdata.serial_number = board_serialno();
 
-        msm_hsusb_udc_pdata.swfi_latency =
-                msm_pm_data
-                [MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].latency;
+        config_gpio_table(usb_phy_3v3_table, ARRAY_SIZE(usb_phy_3v3_table));
+        gpio_set_value(HTCLEO_GPIO_USBPHY_3V3_ENABLE, 1);
 
-	msm_device_hsusb_udc.dev.platform_data = &msm_hsusb_udc_pdata;
+        usb_mpp_init();
 
+        if (machine_is_qsd8x50_ffa())
+                regulator_3p3_is_internal = 1;
 
-	config_gpio_table(usb_phy_3v3_table, ARRAY_SIZE(usb_phy_3v3_table));
-	gpio_set_value(HTCLEO_GPIO_USBPHY_3V3_ENABLE, 1);
+#ifdef CONFIG_USB_MSM_OTG_72K
+        platform_device_register(&msm_device_otg);
+#endif
+
+#ifdef CONFIG_USB_FUNCTION_MSM_HSUSB
+        platform_device_register(&msm_device_hsusb_peripheral);
+#endif
+
+#ifdef CONFIG_USB_MSM_72K
+        platform_device_register(&msm_device_gadget_peripheral);
+#endif
 
         platform_device_register(&usb_mass_storage_device);
 #ifdef CONFIG_USB_ANDROID_RNDIS
         platform_device_register(&rndis_device);
 #endif
         platform_device_register(&android_usb_device);
-
-#ifdef CONFIG_USB_MSM_OTG_72K
-	msm_device_otg.dev.platform_data = &msm_otg_pdata;
-	platform_device_register(&msm_device_otg);
-#endif
 
 	/* support for ehci host */
         vreg_usb = vreg_get(NULL, "boost");
@@ -491,18 +644,12 @@ static void htcleo_init_usb_devices(void)
                 return;
         }
 
-        platform_device_register(&msm_device_hsusb_udc);
-
-#ifdef CONFIG_USB_EHCI_MSM
-        msm_device_hsusb_host.dev.platform_data = &msm_usb_host_pdata;
-        platform_device_register(&msm_device_hsusb_host);
-#endif
-
-#if 0
-	/* for test */
-        msm_hsusb_udc_pdata.serial_number = board_serialno();
-        msm_device_hsusb_udc.dev.platform_data = &msm_hsusb_udc_pdata;
-	platform_device_register(&msm_device_hsusb_udc);
+        platform_device_register(&msm_device_hsusb_otg);
+        msm_add_host(0, &msm_usb_host_pdata);
+#ifdef CONFIG_USB_FS_HOST
+        if (fsusb_gpio_init())
+                return;
+        msm_add_host(1, &msm_usb_host2_pdata);
 #endif
 
 }
@@ -1203,18 +1350,34 @@ static void __init htcleo_init(void)
 	mdelay(100);
 	htcleo_kgsl_power(true);
 
-        htcleo_init_panel();
+	platform_add_devices(devices, ARRAY_SIZE(devices));
 
-        htcleo_init_mmc(0);
-        platform_device_register(&htcleo_timed_gpios);
+        htcleo_init_panel();
 
         i2c_register_board_info(0, base_i2c_devices, ARRAY_SIZE(base_i2c_devices));
 
-#ifdef CONFIG_USB_ANDROID
+        msm_hsusb_pdata.swfi_latency =
+                msm_pm_data
+                [MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].latency;
+        msm_device_hsusb_peripheral.dev.platform_data = &msm_hsusb_pdata;
+
+        msm_otg_pdata.swfi_latency =
+                msm_pm_data
+                [MSM_PM_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT].latency;
+        msm_device_otg.dev.platform_data = &msm_otg_pdata;
+        msm_device_gadget_peripheral.dev.platform_data = &msm_gadget_pdata;
+        msm_gadget_pdata.is_phy_status_timer_on = 1;
+	msm_gadget_pdata.phy_init_seq = htcleo_phy_init_seq;
+
         htcleo_init_usb_devices();
+
+#if 0
+        hsusb_chg_set_supplicants(hsusb_chg_supplied_to,
+                                  ARRAY_SIZE(hsusb_chg_supplied_to));
 #endif
 
-	platform_add_devices(devices, ARRAY_SIZE(devices));
+	htcleo_init_mmc(0);
+	platform_device_register(&htcleo_timed_gpios);
 
 	/* Blink the camera LED shortly to show that we're alive! */
 #ifdef CONFIG_HTCLEO_BLINK_AT_BOOT

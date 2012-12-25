@@ -28,7 +28,7 @@ obj-$(CONFIG_USB_FSL_QE)	+= fsl_qe_udc.o
 obj-$(CONFIG_USB_CI13XXX)	+= ci13xxx_udc.o
 obj-$(CONFIG_USB_S3C_HSOTG)	+= s3c-hsotg.o
 obj-$(CONFIG_USB_LANGWELL)	+= langwell_udc.o
-obj-$(CONFIG_USB_MSM_72K)       += msm7201_udc.o
+obj-$(CONFIG_USB_MSM_72K)	+= msm72k_udc.o
 
 #
 # USB gadget drivers
@@ -42,7 +42,6 @@ gadgetfs-objs			:= inode.o
 g_file_storage-objs		:= file_storage.o
 g_printer-objs			:= printer.o
 g_cdc-objs			:= cdc2.o
-serial-objs			:= f_serial.o
 
 obj-$(CONFIG_USB_ZERO)		+= g_zero.o
 obj-$(CONFIG_USB_AUDIO)		+= g_audio.o
@@ -55,13 +54,15 @@ obj-$(CONFIG_USB_MIDI_GADGET)	+= g_midi.o
 obj-$(CONFIG_USB_CDC_COMPOSITE) += g_cdc.o
 obj-$(CONFIG_USB_ANDROID)	+= android.o
 obj-$(CONFIG_USB_ANDROID_ACM)	+= f_acm.o u_serial.o
+obj-$(CONFIG_USB_F_SERIAL)	+= f_serial.o u_serial.o
 obj-$(CONFIG_USB_ANDROID_ADB)	+= f_adb.o
 obj-$(CONFIG_USB_ANDROID_MASS_STORAGE)	+= f_mass_storage.o
+obj-$(CONFIG_USB_MARLIN_SCSI_EXTENSIONS)	+= marlin_scsi_ext.o
 obj-$(CONFIG_USB_ANDROID_RNDIS)	+= f_rndis.o u_ether.o
-obj-$(CONFIG_USB_ANDROID_SERIAL)	+= serial.o u_serial.o
-obj-$(CONFIG_USB_ANDROID_PROJECTOR)	+= f_projector.o
-obj-$(CONFIG_USB_ANDROID_MTP)	+= f_mtp.o
+obj-$(CONFIG_USB_ANDROID_MTP_ARICENT)	+= f_mtp_aricent.o
+obj-$(CONFIG_USB_ANDROID_ACCESSORY)	+= f_accessory.o
 
 # MSM specific
-obj-$(CONFIG_USB_ANDROID_DIAG)	+= diag.o
+obj-$(CONFIG_USB_ANDROID_DIAG)	+= f_diag.o
+obj-$(CONFIG_USB_ANDROID_RMNET)	+= f_rmnet.o
 

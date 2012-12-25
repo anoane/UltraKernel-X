@@ -331,6 +331,8 @@ struct usb_bus {
 	u8 otg_port;			/* 0, or number of OTG/HNP port */
 	unsigned is_b_host:1;		/* true during some HNP roleswitches */
 	unsigned b_hnp_enable:1;	/* OTG: did A-Host enable HNP? */
+	unsigned hnp_support:1;		/* OTG: HNP is supported on OTG port */
+	struct delayed_work hnp_polling;/* OTG: HNP polling work */
 
 	int devnum_next;		/* Next open device number in
 					 * round-robin allocation */
@@ -522,6 +524,9 @@ struct usb_device {
 #endif
 	struct wusb_dev *wusb_dev;
 	int slot_id;
+#ifdef CONFIG_USB_OTG_NOTIFICATION
+	char otg_dev_info[32];
+#endif
 };
 #define	to_usb_device(d) container_of(d, struct usb_device, dev)
 

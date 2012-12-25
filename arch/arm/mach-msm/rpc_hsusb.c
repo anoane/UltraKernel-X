@@ -156,11 +156,6 @@ int msm_chg_rpc_connect(void)
 {
 	uint32_t chg_vers;
 
-	if (machine_is_msm7201a_surf() || machine_is_msm7x27_surf() ||
-	    machine_is_qsd8x50_surf() || machine_is_msm7x25_surf() ||
-	    machine_is_qsd8x50a_surf())
-		return -ENOTSUPP;
-
 	if (chg_ep && !IS_ERR(chg_ep)) {
 		pr_debug("%s: chg_ep already connected\n", __func__);
 		return 0;
@@ -360,6 +355,8 @@ int msm_chg_usb_charger_connected(uint32_t device)
 {
 	int rc = 0;
 
+#ifdef CONFIG_USE_PMIC_CHARGING_ON_AMSS
+
 	struct hsusb_start_req {
 		struct rpc_request_hdr hdr;
 		uint32_t otg_dev;
@@ -377,6 +374,7 @@ int msm_chg_usb_charger_connected(uint32_t device)
 	} else
 		pr_debug("msm_chg_usb_charger_connected\n");
 
+#endif
 	return rc;
 }
 EXPORT_SYMBOL(msm_chg_usb_charger_connected);
@@ -384,6 +382,8 @@ EXPORT_SYMBOL(msm_chg_usb_charger_connected);
 int msm_chg_usb_i_is_available(uint32_t sample)
 {
 	int rc = 0;
+
+#ifdef CONFIG_USE_PMIC_CHARGING_ON_AMSS
 
 	struct hsusb_start_req {
 		struct rpc_request_hdr hdr;
@@ -401,7 +401,7 @@ int msm_chg_usb_i_is_available(uint32_t sample)
 			__func__, rc);
 	} else
 		pr_debug("msm_chg_usb_i_is_available(%u)\n", sample);
-
+#endif
 	return rc;
 }
 EXPORT_SYMBOL(msm_chg_usb_i_is_available);
@@ -409,6 +409,7 @@ EXPORT_SYMBOL(msm_chg_usb_i_is_available);
 int msm_chg_usb_i_is_not_available(void)
 {
 	int rc = 0;
+#ifdef CONFIG_USE_PMIC_CHARGING_ON_AMSS
 
 	struct hsusb_start_req {
 		struct rpc_request_hdr hdr;
@@ -424,7 +425,7 @@ int msm_chg_usb_i_is_not_available(void)
 			"%d \n", __func__, rc);
 	} else
 		pr_debug("msm_chg_usb_i_is_not_available\n");
-
+#endif
 	return rc;
 }
 EXPORT_SYMBOL(msm_chg_usb_i_is_not_available);
@@ -432,6 +433,8 @@ EXPORT_SYMBOL(msm_chg_usb_i_is_not_available);
 int msm_chg_usb_charger_disconnected(void)
 {
 	int rc = 0;
+
+#ifdef CONFIG_USE_PMIC_CHARGING_ON_AMSS
 
 	struct hsusb_start_req {
 		struct rpc_request_hdr hdr;
@@ -447,7 +450,7 @@ int msm_chg_usb_charger_disconnected(void)
 			__func__, rc);
 	} else
 		pr_debug("msm_chg_usb_charger_disconnected\n");
-
+#endif
 	return rc;
 }
 EXPORT_SYMBOL(msm_chg_usb_charger_disconnected);
@@ -650,7 +653,6 @@ static int hsusb_chg_get_property(struct power_supply *bat_ps,
 /* charger api wrappers */
 int hsusb_chg_init(int init)
 {
-#if 0
 	if (init) {
 		mutex_init(&hsusb_chg_state.lock);
 
@@ -673,11 +675,6 @@ int hsusb_chg_init(int init)
 		power_supply_unregister(&hsusb_chg_state.supply_ac);
 		return msm_chg_rpc_close();
 	}
-#endif
-        if (init)
-                return msm_chg_rpc_connect();
-        else
-                return msm_chg_rpc_close();
 
 }
 EXPORT_SYMBOL(hsusb_chg_init);
@@ -688,10 +685,12 @@ void hsusb_chg_vbus_draw(unsigned mA)
 	hsusb_chg_state.usb_chg_current_ma = mA;
 	mutex_unlock(&hsusb_chg_state.lock);
 
+#if 0
 	if (hsusb_chg_state.connected == USB_CHG_TYPE__WALLCHARGER)
 		power_supply_changed(&hsusb_chg_state.supply_ac);
 	else
 		power_supply_changed(&hsusb_chg_state.supply_usb);
+#endif
 
 	msm_chg_usb_i_is_available(mA);
 }
@@ -709,6 +708,7 @@ void hsusb_chg_connected(enum chg_type chgtype)
 		hsusb_chg_state.usb_chg_current_ma = 0;
 		mutex_unlock(&hsusb_chg_state.lock);
 
+#if 0
 		if (hsusb_chg_state.connected == USB_CHG_TYPE__WALLCHARGER) {
 			hsusb_chg_state.connected = chgtype;
 			power_supply_changed(&hsusb_chg_state.supply_ac);
@@ -716,6 +716,7 @@ void hsusb_chg_connected(enum chg_type chgtype)
 			hsusb_chg_state.connected = chgtype;
 			power_supply_changed(&hsusb_chg_state.supply_usb);
 		}
+#endif
 
 		msm_chg_usb_i_is_not_available();
 		msm_chg_usb_charger_disconnected();
@@ -725,10 +726,13 @@ void hsusb_chg_connected(enum chg_type chgtype)
 	pr_info("\nCharger Type: %s\n", chg_types[chgtype]);
 
 	hsusb_chg_state.connected = chgtype;
+
+#if 0
 	if (hsusb_chg_state.connected == USB_CHG_TYPE__WALLCHARGER)
 		power_supply_changed(&hsusb_chg_state.supply_ac);
 	else
 		power_supply_changed(&hsusb_chg_state.supply_usb);
+#endif
 
 	msm_chg_usb_charger_connected(chgtype);
 }

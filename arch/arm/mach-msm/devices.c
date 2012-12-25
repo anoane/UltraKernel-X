@@ -56,6 +56,30 @@ int usb_phy_error;
 #define MFG_GPIO_TABLE_MAX_SIZE        0x400
 static unsigned char mfg_gpio_table[MFG_GPIO_TABLE_MAX_SIZE];
 
+void internal_phy_reset(void)
+{
+        struct msm_rpc_endpoint *usb_ep;
+        int rc;
+        struct hsusb_phy_start_req {
+                struct rpc_request_hdr hdr;
+        } req;
+
+        printk(KERN_INFO "msm_hsusb_phy_reset\n");
+
+        usb_ep = msm_rpc_connect(HSUSB_API_PROG, HSUSB_API_VERS, 0);
+        if (IS_ERR(usb_ep)) {
+                printk(KERN_ERR "%s: init rpc failed! error: %ld\n",
+                                __func__, PTR_ERR(usb_ep));
+                return;
+        }
+        rc = msm_rpc_call(usb_ep, HSUSB_API_INIT_PHY_PROC,
+                        &req, sizeof(req), 5 * HZ);
+        if (rc < 0)
+                printk(KERN_ERR "%s: rpc call failed! (%d)\n", __func__, rc);
+
+        msm_rpc_close(usb_ep);
+}
+
 static void *usb_base;
 #define MSM_USB_BASE              ((unsigned)usb_base)
 static unsigned ulpi_read(void __iomem *usb_base, unsigned reg)
@@ -207,7 +231,7 @@ static int msm_hsusb_phy_caliberate(void __iomem *usb_base)
 		return -ETIMEDOUT;
 
 	res = msm_hsusb_ulpi_write_with_reset(usb_base,
-			res | ULPI_SUSPENDM,
+			res &~ ULPI_SUSPENDM,
 			ULPI_FUNC_CTRL_CLR);
 	if (res)
 		return -ETIMEDOUT;
@@ -357,7 +381,8 @@ static struct platform_device usb_mass_storage_device = {
 };
 #endif
 
-static struct resource resources_hsusb_udc[] = {
+#define MSM_HSUSB_PHYS        0xA0800000
+static struct resource resources_hsusb_otg[] = {
         {
                 .start  = MSM_HSUSB_PHYS,
                 .end    = MSM_HSUSB_PHYS + MSM_HSUSB_SIZE,
@@ -368,25 +393,96 @@ static struct resource resources_hsusb_udc[] = {
                 .end    = INT_USB_HS,
                 .flags  = IORESOURCE_IRQ,
         },
-#ifdef CONFIG_ARCH_MSM7X30
-        {
-                .name   = "vbus_on",
-                .start  = PM8058_IRQ_CHGVAL,
-                .end    = PM8058_IRQ_CHGVAL,
-                .flags  = IORESOURCE_IRQ,
-        },
-#endif
 };
 
-struct platform_device msm_device_hsusb_udc = {
-        .name           = "msm_hsusb_udc",
+static u64 dma_mask = 0xffffffffULL;
+struct platform_device msm_device_hsusb_otg = {
+        .name           = "msm_hsusb_otg",
         .id             = -1,
-        .num_resources  = ARRAY_SIZE(resources_hsusb_udc),
-        .resource       = resources_hsusb_udc,
+        .num_resources  = ARRAY_SIZE(resources_hsusb_otg),
+        .resource       = resources_hsusb_otg,
         .dev            = {
-                .coherent_dma_mask      = 0xffffffff,
+                .dma_mask               = &dma_mask,
+                .coherent_dma_mask      = 0xffffffffULL,
         },
 };
+
+static struct resource resources_hsusb_peripheral[] = {
+        {
+                .start  = MSM_HSUSB_PHYS,
+                .end    = MSM_HSUSB_PHYS + MSM_HSUSB_SIZE,
+                .flags  = IORESOURCE_MEM,
+        },
+        {
+                .start  = INT_USB_HS,
+                .end    = INT_USB_HS,
+                .flags  = IORESOURCE_IRQ,
+        },
+};
+
+static struct resource resources_gadget_peripheral[] = {
+        {
+                .start  = MSM_HSUSB_PHYS,
+                .end    = MSM_HSUSB_PHYS + MSM_HSUSB_SIZE,
+                .flags  = IORESOURCE_MEM,
+        },
+        {
+                .start  = INT_USB_HS,
+                .end    = INT_USB_HS,
+                .flags  = IORESOURCE_IRQ,
+        },
+};
+
+
+struct platform_device msm_device_hsusb_peripheral = {
+        .name           = "msm_hsusb_peripheral",
+        .id             = -1,
+        .num_resources  = ARRAY_SIZE(resources_hsusb_peripheral),
+        .resource       = resources_hsusb_peripheral,
+        .dev            = {
+                .dma_mask               = &dma_mask,
+                .coherent_dma_mask      = 0xffffffffULL,
+        },
+};
+
+struct platform_device msm_device_gadget_peripheral = {
+        .name           = "msm_hsusb",
+        .id             = -1,
+        .num_resources  = ARRAY_SIZE(resources_gadget_peripheral),
+        .resource       = resources_gadget_peripheral,
+        .dev            = {
+                .dma_mask               = &dma_mask,
+                .coherent_dma_mask      = 0xffffffffULL,
+        },
+};
+
+
+#ifdef CONFIG_USB_FS_HOST
+#define MSM_HS2USB_PHYS        0xA0800400
+static struct resource resources_hsusb_host2[] = {
+        {
+                .start  = MSM_HS2USB_PHYS,
+                .end    = MSM_HS2USB_PHYS + MEM_HSUSB_SIZE,
+                .flags  = IORESOURCE_MEM,
+        },
+        {
+                .start  = INT_USB_OTG,
+                .end    = INT_USB_OTG,
+                .flags  = IORESOURCE_IRQ,
+        },
+};
+
+struct platform_device msm_device_hsusb_host2 = {
+        .name           = "msm_hsusb_host",
+        .id             = 1,
+        .num_resources  = ARRAY_SIZE(resources_hsusb_host2),
+        .resource       = resources_hsusb_host2,
+        .dev            = {
+                .dma_mask               = &dma_mask,
+                .coherent_dma_mask      = 0xffffffffULL,
+        },
+};
+#endif
 
 static struct resource resources_hsusb_host[] = {
         {
@@ -411,6 +507,23 @@ struct platform_device msm_device_hsusb_host = {
         },
 };
 
+static struct platform_device *msm_host_devices[] = {
+        &msm_device_hsusb_host,
+#ifdef CONFIG_USB_FS_HOST
+        &msm_device_hsusb_host2,
+#endif
+};
+
+int msm_add_host(unsigned int host, struct msm_usb_host_platform_data *plat)
+{
+        struct platform_device  *pdev;
+
+        pdev = msm_host_devices[host];
+        if (!pdev)
+                return -ENODEV;
+        pdev->dev.platform_data = plat;
+        return platform_device_register(pdev);
+}
 
 static struct resource resources_otg[] = {
         {

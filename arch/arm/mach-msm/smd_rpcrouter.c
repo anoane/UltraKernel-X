@@ -465,8 +465,6 @@ static int process_control_msg(union rr_control_msg *msg, int len)
 		pr_info("o NEW_SERVER id=%d:%08x prog=%08x:%08x\n",
 		   msg->srv.pid, msg->srv.cid, msg->srv.prog, msg->srv.vers);
 
-		WARN_ON(1);
-
 		server = rpcrouter_lookup_server(msg->srv.prog, msg->srv.vers);
 
 		if (!server) {
