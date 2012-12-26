@@ -450,7 +450,7 @@ adreno_probe(struct platform_device *pdev)
 	if (status)
 		goto error_close_rb;
 
-	adreno_debugfs_init(device);
+	// adreno_debugfs_init(device);
 
 	kgsl_pwrscale_init(device);
 	kgsl_pwrscale_attach_policy(device, ADRENO_DEFAULT_PWRSCALE_POLICY);

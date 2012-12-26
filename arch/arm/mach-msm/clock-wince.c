@@ -1349,6 +1349,7 @@ static int __init clock_late_init(void)
 			if (!clk->count && clk->id != MDP_CLK) {
 				count++;
 				pc_clk_disable(clk->id);
+				pr_info("clock: %s auto disable.\n", clk->name);
 			}
 			spin_unlock_irqrestore(&clocks_lock, flags);
 		}

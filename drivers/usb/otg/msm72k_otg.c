@@ -1067,8 +1067,12 @@ static int msm_otg_set_host(struct otg_transceiver *xceiv, struct usb_bus *host)
 	/* Id pin is not routed to PMIC. Host mode can not be
 	 * supported with pmic notification support.
 	 */
-	if (!dev->start_host || dev->pmic_notif_supp)
+	if (!dev->start_host) { // || dev->pmic_notif_supp) {
+
+		pr_err("usb-otg: Host mode can not be Supported; sh=%d, supp=%d\n", 
+			dev->start_host, dev->pmic_notif_supp);
 		return -ENODEV;
+	}
 
 	if (!host) {
 		msm_otg_start_host(xceiv, REQUEST_STOP);

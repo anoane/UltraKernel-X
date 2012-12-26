@@ -2683,6 +2683,10 @@ static int msm72k_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(&pdev->dev);
 
+        /* enable HSCLK - add @ 2012/12/25 */
+        if (otg->set_clk)
+                otg->set_clk(ui->xceiv, 1);
+
 	/* Setup phy stuck timer */
 	if (ui->pdata && ui->pdata->is_phy_status_timer_on)
 		setup_timer(&phy_status_timer, usb_phy_status_check_timer, 0);
